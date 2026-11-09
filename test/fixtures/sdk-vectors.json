@@ -1,0 +1,44 @@
+{
+  "devPublic": "ed25519:ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+  "cases": [
+    {
+      "index": 0,
+      "agentPublic": "ed25519:lLCFpZihMbci6p8LTUrEzndOveIXdHA9xQZ+L5dBPTI=",
+      "entityId": "zns:057a062b48096f219b8ec32bce56cd1d",
+      "proof": {
+        "developer_public_key": "ed25519:ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+        "entity_index": 0,
+        "developer_signature": "ed25519:/6pWJ3ls+KJQFxCRoqNwJBn8j91Lxx8ETPrpM+BW6TJGcgqaVAiH8X23bg4A6iUXVDnE+CeBua2E69W2AIe8Bw=="
+      }
+    },
+    {
+      "index": 7,
+      "agentPublic": "ed25519:6j2IeUEsXyidcnAN1cIeJZKC40HJvuFh1vxT6YQg0Fk=",
+      "entityId": "zns:4dd73217333e820890a9ab08d3e4b5c6",
+      "proof": {
+        "developer_public_key": "ed25519:ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+        "entity_index": 7,
+        "developer_signature": "ed25519:3ov/ai4XPR2iW2I/p0BTminFfT8MnmCMULew2LYHETigSKhJYe3N0CgXUjIa93jTkjGRwxJdGhmcgy0khJohBQ=="
+      }
+    },
+    {
+      "index": 4294967295,
+      "agentPublic": "ed25519:P25lsXZsE/nEDKhtuwFS+4BXUUmFpNyUqx6P8vv8vkQ=",
+      "entityId": "zns:95a4a76378b3c8a434d22fd1d3495aff",
+      "proof": {
+        "developer_public_key": "ed25519:ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+        "entity_index": 4294967295,
+        "developer_signature": "ed25519:/CC22erf/6X7pK4DnBSJ8e2hBsmzhfDOJFVLwGjCdNK9Ht51hvnKzmuV7A2ZXree63333XVxet4V2XE68/qeDg=="
+      }
+    }
+  ],
+  "registration": {
+    "agentIndex": 7,
+    "canonicalJson": "{\"category\":\"general\",\"entity_url\":\"https://gw.zynd.ai/a/zns:4dd73217333e820890a9ab08d3e4b5c6\",\"name\":\"Weather ☀ bot\",\"public_key\":\"ed25519:6j2IeUEsXyidcnAN1cIeJZKC40HJvuFh1vxT6YQg0Fk=\",\"summary\":\"Forecasts \\\"quoted\\\" & <tags>\",\"tags\":[\"b\",\"a\"]}",
+    "signature": "ed25519:Hwe0Fiyku0G8m075YK71y+BLT7rUBrxFekjkQWa5eu6EpzxN4wXxWZO6P7W1PIqmtZee8bZcNlldf/aq8nwgAg=="
+  },
+  "heartbeat": {
+    "timestamp": "2026-11-10T02:30:00Z",
+    "signature": "ed25519:OT7jQ1VQCMmosvADWumUFJMu7C6yLPek2rFNuiR6cdtDqlBTz6kpnkLfgOnRWUihUlJ4Hmlg72uSgwqC7PuTAg=="
+  }
+}
