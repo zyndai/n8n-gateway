@@ -1,0 +1,45 @@
+{
+  "name": "zynd-n8n-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zynd n8n Gateway: identity derivation, heartbeats, A2A, x402 and task store for n8n agent builders",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --max-old-space-size=96 --max-semi-space-size=2 --optimize-for-size dist/index.mjs",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "measure:memory": "tsx scripts/measure-m1-memory.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:check": "drizzle-kit check"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "drizzle-orm": "^0.45.4",
+    "express": "^5.3.0",
+    "postgres": "^4.1.0",
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/supertest": "^7.2.1",
+    "@types/ws": "^8.18.2",
+    "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "supertest": "^7.3.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^5.1.0"
+  }
+}
