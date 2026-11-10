@@ -33,6 +33,7 @@ export class MemoryStore implements ListingStoreLike {
       webhookUrl: null,
       webhookSecretEnc: null,
       workflowId: input.workflowId ?? null,
+      priceUsd: input.priceUsd ?? null,
       status: 'DRAFT',
       createdAt: now,
       updatedAt: now,
@@ -68,6 +69,29 @@ export class MemoryStore implements ListingStoreLike {
     return [...this.listings.values()]
       .filter((l) => l.status === 'ACTIVE' && l.entityId && (!requireWebhook || l.webhookUrl))
       .map((l) => ({ listingId: l.id, developerId: l.developerId, derivedKeyIndex: l.derivedKeyIndex, entityId: l.entityId as string }));
+  }
+  async getByEntityId(entityId: string) {
+    return [...this.listings.values()].find((l) => l.entityId === entityId);
+  }
+  async getById(listingId: string) {
+    return this.listings.get(listingId);
+  }
+  async setWebhook(developerId: string, listingId: string, webhook: { url: string; secretEnc: string } | null) {
+    const l = this.listings.get(listingId);
+    if (!l || l.developerId !== developerId) return undefined;
+    const next = { ...l, webhookUrl: webhook?.url ?? null, webhookSecretEnc: webhook?.secretEnc ?? null, updatedAt: new Date() };
+    this.listings.set(listingId, next);
+    return next;
+  }
+  async setPrice(developerId: string, listingId: string, priceUsd: string | null) {
+    const l = this.listings.get(listingId);
+    if (!l || l.developerId !== developerId) return undefined;
+    const next = { ...l, priceUsd, updatedAt: new Date() };
+    this.listings.set(listingId, next);
+    return next;
+  }
+  async findByWebhookUrl(developerId: string, url: string) {
+    return [...this.listings.values()].filter((l) => l.developerId === developerId && l.webhookUrl === url);
   }
   async record(listingId: string, patch: HeartbeatPatch) {
     const prev = this.heartbeats.get(listingId);

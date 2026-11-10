@@ -24,6 +24,21 @@ export class AgentDnsError extends Error {
   }
 }
 
+export interface EntityRecord {
+  entity_id?: string;
+  public_key?: string;
+  status?: string;
+  entity_url?: string;
+  name?: string;
+}
+
+export interface SearchQuery {
+  query: string;
+  category?: string;
+  max_results: number;
+  offset: number;
+}
+
 const TIMEOUT_MS = 10_000;
 
 /** Thin AgentDNS HTTP client (M0.11 shapes: POST /v1/entities, GET /v1/entities/{id}, WS /v1/entities/{id}/ws). */
@@ -47,14 +62,20 @@ export class AgentDnsClient {
   }
 
   /** GET /v1/entities/{id}; null on 404. */
-  async getEntity(entityId: string): Promise<{ entity_id?: string; public_key?: string; status?: string } | null> {
+  async getEntity(entityId: string): Promise<EntityRecord | null> {
     try {
       const res = await this.request('GET', `/v1/entities/${encodeURIComponent(entityId)}`);
-      return (await res.json()) as { entity_id?: string; public_key?: string; status?: string };
+      return (await res.json()) as EntityRecord;
     } catch (err) {
       if (err instanceof AgentDnsError && err.status === 404) return null;
       throw err;
     }
+  }
+
+  /** POST /v1/search (M2.3). The registry's response is passed through unchanged. */
+  async search(body: SearchQuery): Promise<unknown> {
+    const res = await this.request('POST', '/v1/search', body);
+    return res.json();
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<Response> {

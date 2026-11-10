@@ -57,12 +57,11 @@ describe('error middleware', () => {
   });
 
   it('routes for each audience are mounted behind their auth', async () => {
-    // n8n and A2A auth land in M2.1 / M2.6.
-    for (const path of ['/n8n/v1/agents', '/a/ent_1/a2a/v1']) {
-      const res = await request(app).get(path);
-      expect(res.status).toBe(501);
-      expect(res.body.code).toBe('NOT_IMPLEMENTED');
-    }
+    // /n8n/v1 demands an API key (M2.1) and the A2A endpoint is POST-only JSON-RPC (M2.6).
+    const n8n = await request(app).get('/n8n/v1/agents').set('X-Zynd-Api-Key', '');
+    expect(n8n.status).toBe(401);
+    expect(n8n.body.code).toBe('AUTH_INVALID');
+    expect((await request(app).get('/a/ent_1/a2a/v1')).status).toBe(404);
     // Dashboard routes demand a Session JWT (M1.8).
     const res = await request(createApp({ config: { sessionJwtSecret: 'x'.repeat(40) } })).get('/internal/v1/listings');
     expect(res.status).toBe(401);

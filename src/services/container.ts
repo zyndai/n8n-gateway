@@ -2,11 +2,19 @@
 // database, secrets or an AgentDNS connection.
 import { loadConfig, type Config } from '../config.js';
 import { getDb } from '../db/client.js';
+import { A2AHandler } from './A2AHandler.js';
+import { AgentCardService } from './AgentCard.js';
+import { AgentCaller } from './AgentCaller.js';
 import { AgentDnsClient } from './AgentDnsClient.js';
+import { ApiKeyStore } from './ApiKeyStore.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
 import { IdentityService } from './IdentityService.js';
 import { ListingService } from './ListingService.js';
 import { ListingStore } from './ListingStore.js';
+import { NonceStore } from './NonceStore.js';
+import { PaymentProcessor } from './PaymentProcessor.js';
+import { TaskStore } from './TaskStore.js';
+import { WebhookForwarder } from './WebhookForwarder.js';
 import { parseMasterKey } from './keyVault.js';
 
 export interface Services {
@@ -15,6 +23,14 @@ export interface Services {
   identity: IdentityService;
   heartbeats: HeartbeatManager;
   listings: ListingService;
+  agentDns: AgentDnsClient;
+  apiKeys: ApiKeyStore;
+  tasks: TaskStore;
+  nonces: NonceStore;
+  payments: PaymentProcessor;
+  a2a: A2AHandler;
+  caller: AgentCaller;
+  cards: AgentCardService;
 }
 
 let services: Services | undefined;
@@ -22,8 +38,10 @@ let services: Services | undefined;
 export function getServices(): Services {
   if (services) return services;
   const config = loadConfig();
-  const store = new ListingStore(getDb());
-  const identity = new IdentityService({ masterKey: parseMasterKey(config.pkiEncryptionKey), keySource: store });
+  const db = getDb();
+  const store = new ListingStore(db);
+  const masterKey = parseMasterKey(config.pkiEncryptionKey);
+  const identity = new IdentityService({ masterKey, keySource: store });
   const agentDns = new AgentDnsClient(config.agentDnsUrl);
   const heartbeats = new HeartbeatManager({
     heartbeatUrl: (id) => agentDns.heartbeatUrl(id),
@@ -38,8 +56,33 @@ export function getServices(): Services {
     heartbeats,
     publicUrl: config.publicUrl,
     heartbeatRequiresWebhook: config.heartbeatRequiresWebhook,
+    masterKey,
+    allowPrivateWebhooks: config.allowPrivateWebhooks,
   });
-  services = { config, store, identity, heartbeats, listings };
+
+  const apiKeys = new ApiKeyStore(db);
+  const tasks = new TaskStore(db);
+  const nonces = new NonceStore(db);
+  const payments = new PaymentProcessor({ config: config.x402 });
+  const a2a = new A2AHandler({
+    listings,
+    tasks,
+    payments,
+    identity,
+    forwarder: new WebhookForwarder(),
+    inboundPriceUsd: config.x402.inboundPriceUsd,
+    publicUrl: config.publicUrl,
+  });
+  const caller = new AgentCaller({ agentDns, identity, payments, tasks, apiKeys, defaultMaxPaymentUsd: config.x402.defaultMaxPaymentUsd });
+  const cards = new AgentCardService({
+    listings,
+    identity,
+    payments,
+    publicUrl: config.publicUrl,
+    registryUrl: config.agentDnsUrl,
+    defaultPriceUsd: config.x402.inboundPriceUsd,
+  });
+  services = { config, store, identity, heartbeats, listings, agentDns, apiKeys, tasks, nonces, payments, a2a, caller, cards };
   return services;
 }
 

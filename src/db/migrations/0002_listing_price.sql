@@ -1,0 +1,1 @@
+ALTER TABLE "n8n_listing" ADD COLUMN "priceUsd" numeric(18, 6);

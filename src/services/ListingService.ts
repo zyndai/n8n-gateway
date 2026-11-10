@@ -1,6 +1,9 @@
 // Listing lifecycle (M1.2, M1.6-M1.8): create -> register on AgentDNS -> heartbeat.
 // Implements HLD flow 3 (Listing activation).
 import { ApiError } from '../errors.js';
+import { decryptSecret, encryptSecret } from './keyVault.js';
+import { parseUsd } from './money.js';
+import { assertWebhookUrl } from './webhookUrl.js';
 import { AgentDnsClient, AgentDnsError, toGatewayError, type RegisterEntityBody } from './AgentDnsClient.js';
 import type { HeartbeatManager } from './HeartbeatManager.js';
 import { entityIdFor, publicKeyString, type IdentityService } from './IdentityService.js';
@@ -17,6 +20,8 @@ export interface ListingView {
   derivedKeyIndex: number;
   webhookUrl: string | null;
   workflowId: string | null;
+  /** Own price per inbound call in USD, or null when the Gateway default applies. */
+  priceUsd: string | null;
   status: ListingRow['status'];
   createdAt: Date;
   updatedAt: Date;
@@ -31,6 +36,9 @@ export interface ListingServiceDeps {
   publicUrl: string;
   /** G7: heartbeat only once a webhook is bound. */
   heartbeatRequiresWebhook: boolean;
+  /** Encrypts webhook secrets at rest (G1). Required for webhook binding and forwarding. */
+  masterKey?: Buffer;
+  allowPrivateWebhooks?: boolean;
   log?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -46,8 +54,17 @@ export class ListingService {
   }
 
   async create(developerId: string, input: NewListing): Promise<ListingView> {
+    if (input.priceUsd !== undefined) parseUsd(input.priceUsd, 'priceUsd');
     if (!(await this.deps.store.developerExists(developerId))) throw new ApiError('NOT_FOUND', 'Developer not found');
     return this.view(await this.deps.store.createListing(developerId, input), null);
+  }
+
+  /** G17: set the listing's own price per inbound call ("0" = free), or null to use the Gateway default. */
+  async setPrice(developerId: string, listingId: string, priceUsd: string | null): Promise<ListingView> {
+    if (priceUsd !== null) parseUsd(priceUsd, 'priceUsd');
+    const row = await this.deps.store.setPrice(developerId, listingId, priceUsd);
+    if (!row) throw new ApiError('NOT_FOUND', 'Listing not found');
+    return this.get(developerId, listingId);
   }
 
   async list(developerId: string): Promise<ListingView[]> {
@@ -95,6 +112,58 @@ export class ListingService {
     if (listing.entityId) await this.deps.heartbeats.stop(listing.entityId);
     this.deps.identity.invalidate(listing.id);
     return this.get(developerId, listingId);
+  }
+
+  // --- webhooks (M2.5, HLD flow 5). G14: a webhook is identified by its listing id. -----------
+
+  /**
+   * Bind the n8n webhook to a listing (ZyndTrigger `create`). A DRAFT or ERROR listing is
+   * registered on AgentDNS first, so activating the workflow is enough to go live; an ACTIVE one
+   * starts beating. An INACTIVE listing stays inactive: the developer turned it off on purpose.
+   */
+  async bindWebhook(developerId: string, listingId: string, input: { url: unknown; secret: unknown }): Promise<ListingView> {
+    const masterKey = this.deps.masterKey;
+    if (!masterKey) throw new ApiError('INTERNAL', 'Webhook binding is not configured');
+    const url = assertWebhookUrl(input.url, { allowPrivate: this.deps.allowPrivateWebhooks ?? false });
+    if (typeof input.secret !== 'string' || input.secret.length < 8 || input.secret.length > 256) {
+      throw new ApiError('BAD_REQUEST', 'secret must be a string of 8 to 256 characters');
+    }
+    await this.owned(developerId, listingId);
+    const bound = await this.deps.store.setWebhook(developerId, listingId, { url, secretEnc: encryptSecret(input.secret, masterKey) });
+    if (!bound) throw new ApiError('NOT_FOUND', 'Listing not found');
+
+    if (bound.status === 'DRAFT' || bound.status === 'ERROR') return this.activate(developerId, listingId);
+    this.ensureHeartbeat(bound);
+    return this.get(developerId, listingId);
+  }
+
+  /** ZyndTrigger `delete`: forget the webhook and stop beating. AgentDNS marks the agent inactive after 300 s. */
+  async unbindWebhook(developerId: string, listingId: string): Promise<ListingView> {
+    const { listing } = await this.owned(developerId, listingId);
+    await this.deps.store.setWebhook(developerId, listingId, null);
+    if (this.deps.heartbeatRequiresWebhook && listing.entityId) await this.deps.heartbeats.stop(listing.entityId);
+    return this.get(developerId, listingId);
+  }
+
+  /** ZyndTrigger `checkExists`: the developer's listings bound to exactly this URL. */
+  async findWebhooks(developerId: string, url: string): Promise<ListingView[]> {
+    const rows = await this.deps.store.findByWebhookUrl(developerId, url);
+    return Promise.all(rows.map((r) => this.get(developerId, r.id)));
+  }
+
+  /** The decrypted webhook target of a listing, or undefined when none is bound. */
+  webhookTarget(listing: ListingRow): { url: string; secret: string } | undefined {
+    const { masterKey } = this.deps;
+    if (!masterKey || !listing.webhookUrl || !listing.webhookSecretEnc) return undefined;
+    return { url: listing.webhookUrl, secret: decryptSecret(listing.webhookSecretEnc, masterKey) };
+  }
+
+  getByEntityId(entityId: string): Promise<ListingRow | undefined> {
+    return this.deps.store.getByEntityId(entityId);
+  }
+
+  getById(listingId: string): Promise<ListingRow | undefined> {
+    return this.deps.store.getById(listingId);
   }
 
   /** Start the heartbeat if the listing is ACTIVE and (per G7) has a webhook. Safe to call repeatedly. */
@@ -196,6 +265,7 @@ export class ListingService {
       derivedKeyIndex: l.derivedKeyIndex,
       webhookUrl: l.webhookUrl,
       workflowId: l.workflowId,
+      priceUsd: l.priceUsd,
       status: l.status,
       createdAt: l.createdAt,
       updatedAt: l.updatedAt,

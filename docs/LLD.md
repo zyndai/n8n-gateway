@@ -98,27 +98,46 @@ Maintains a `Map<entityId, WebSocket>`. Each active listing holds one persistent
 
 ### A2AHandler
 
+Mounted at `POST /a/:entityId/a2a/v1` (JSON-RPC 2.0). Methods: `tasks/send` (alias `message/send`), `tasks/get`, `tasks/cancel`. Failures keep their HTTP status (401, 402, 409, 504) and carry a JSON-RPC error envelope; auth errors use the SDK codes -32100 / -32101 / -32102.
+
+Discovery: `GET /a/:entityId/.well-known/agent-card.json` serves the listing's A2A Agent Card (protocol 0.3.0, `preferredTransport: JSONRPC`, `url` = `{entity_url}/a2a/v1`). SDK clients append that path to the registry's `entity_url`. The card is signed by the listing key (detached JWS over the JCS body, as the SDK's `signAgentCard`) and its `x-zynd` block carries the entity id, public key, derivation proof, wallet address and pricing. It declares no streaming or push support.
+
 Flow for `tasks/send`:
 
-1. Look up listing by `entityId` — must be ACTIVE
-2. Verify `x-zynd-auth` signature against listing's derived public key
-3. If x402 headers present, verify payment via PaymentProcessor
-4. Create `N8nTask` with status PENDING, direction INBOUND
-5. Call `WebhookForwarder.forward(webhookUrl, secret, task)`
-6. Poll `N8nTask` every 2 s until COMPLETED or FAILED, timeout 300 s
-7. Return A2A JSON-RPC response with task output or error
+1. `a2aAuth` middleware: verify `params.message.metadata["x-zynd-auth"]` (see below), claim the nonce
+2. Look up the listing by `entityId`; it must be ACTIVE with a webhook bound, else `LISTING_INACTIVE` (409)
+3. If the listing has a price (its own `priceUsd`, else `X402_INBOUND_PRICE_USD`; `0` = free), `PaymentProcessor.verifyX402`; a missing or invalid proof answers 402 with a `PAYMENT-REQUIRED` header
+4. Create `N8nTask` (INBOUND, PENDING; the caller's auth block is not stored)
+5. `WebhookForwarder.forward(webhookUrl, secret, job)`; PENDING → PROCESSING. A 2xx body containing `output` finishes the job here
+6. Wait until COMPLETED / FAILED / CANCELED, woken the moment `jobs/complete` lands and polling every 2 s as a fallback; after 300 s set TIMEOUT and answer `TASK_TIMEOUT` (504)
+7. If a payment was verified and the job COMPLETED, settle it (`PAYMENT-RESPONSE` header, `paymentTxn` stored); otherwise release it. Answer with an A2A `Task` (output in an artifact: a text part for strings, a data part otherwise)
+
+`x-zynd-auth` (`zyndAuth.ts`, wire format of the TS SDK): `{ v: 1, entity_id, public_key, nonce, issued_at, expires_at, signature, fqan?, developer_proof? }`. The signature is Ed25519 over `"ZYND-A2A-MSG-v1\n" ‖ JCS(message)` with `signature` blanked. Checks, in order: version, timestamps (60 s skew, lifetime at most 10 min), `entity_id` matches the key, signature, then the nonce is claimed in `n8n_nonce` (key `entity_id:nonce`). `developer_proof` is accepted but not verified.
+
+`tasks/get` and `tasks/cancel` take `{ id }`; the task must belong to the entity in the URL. Cancel ends the A2A task only (the Gateway cannot stop an n8n execution): status CANCELED, payment released, a later `jobs/complete` answers 409.
 
 ### PaymentProcessor
 
+x402 v2, `exact` scheme, EVM, EIP-3009 `TransferWithAuthorization`. Built on `@noble` only.
+
 | Method | Purpose |
 | --- | --- |
-| `verifyX402(headers, body)` | Verify inbound x402 payment proof |
-| `signX402(devPrivateKeyBytes, amount, recipient)` | Create x402 headers for outbound calls |
-| `deriveEvmKey(ed25519PrivateKey)` | SHA-256 of Ed25519 → secp256k1 → EVM account |
+| `verifyX402(headers, requirements)` | Verify an inbound `PAYMENT-SIGNATURE`: structure, amount and recipient equal to `requirements`, validity window, signer recovered from the EIP-712 signature, in-process nonce replay guard, then facilitator `/verify` |
+| `settle(verified)` / `release(verified)` | Facilitator `/settle` after a successful job / free the authorization when the job did not succeed |
+| `requirementsFor(payTo, usd)` / `paymentRequiredHeader(...)` | Build what an inbound caller must pay (`payTo` is the listing's own EVM address) |
+| `signX402(devPrivateKeyBytes, requirements)` | Create the `PAYMENT-SIGNATURE` header for an outbound call, signed by the developer's EVM key |
+| `parsePaymentRequired(headers, body)` / `parsePaymentResponse(headers)` | Read a target's 402 and its settlement header |
+| `deriveEvmKey(ed25519PrivateKey)` / `evmAddress(...)` | `SHA-256(Ed25519 seed)` as the secp256k1 key; EIP-55 address |
+
+Configuration: `X402_FACILITATOR_URL`, `X402_NETWORK`, `X402_ASSET` (+ `_NAME`, `_VERSION`, `_DECIMALS`), `X402_INBOUND_PRICE_USD`, `X402_DEFAULT_MAX_PAYMENT_USD`. Amounts are decimal USD strings (6 decimals) converted with `bigint`, never floats.
+
+### AgentCaller (outbound, flow 2)
+
+`POST /n8n/v1/agents/:id/tasks`: look up `entity_url` on AgentDNS, send `message/send` to `{entity_url}/a2a/v1` signed with the developer master key (G3). On a 402: check the price against `maxPaymentUsd` (default `X402_DEFAULT_MAX_PAYMENT_USD`), reserve it on the API key with one conditional `UPDATE` (`PAYMENT_CAP` if it exceeds `spendCapUsd`), sign, and send again with `PAYMENT-SIGNATURE` and a fresh `x-zynd-auth`. Then follow the returned task with `tasks/get` every 2 s (300 s cap). The reservation is refunded only when the agent refused the paid request and reported no settlement.
 
 ### WebhookForwarder
 
-POSTs task payload to the n8n webhook URL with `X-Zynd-Webhook-Secret` header. Retry once on 5xx after 2 s. Connection timeout 10 s, response timeout 30 s.
+POSTs the job to the n8n webhook with `X-Zynd-Webhook-Secret` and `X-Zynd-Job-Id` headers. Retry once after 2 s on 5xx or a failed connection. Connection timeout 10 s, response timeout 30 s (a response timeout and a 4xx are not retried; redirects are not followed). Body: see `WebhookJob` in `src/n8nContract.ts`.
 
 ---
 
@@ -154,9 +173,10 @@ The dashboard's `/api/n8n/*` routes (Vercel) call the Gateway server to server a
 
 | Method | Path | Action |
 | --- | --- | --- |
-| POST | `/internal/v1/listings` | Create a DRAFT listing (`name`, `summary`, `category`, `tags[]`, `workflowId?`) and allocate its `derivedKeyIndex` |
+| POST | `/internal/v1/listings` | Create a DRAFT listing (`name`, `summary`, `category`, `tags[]`, `workflowId?`, `priceUsd?`) and allocate its `derivedKeyIndex` |
 | GET | `/internal/v1/listings` | The developer's listings, each with its heartbeat status |
 | GET | `/internal/v1/listings/:id` | One listing |
+| PATCH | `/internal/v1/listings/:id` | Set the listing's price: `{ "priceUsd": "0.05" }`, `"0"` for free, `null` for the Gateway default |
 | POST | `/internal/v1/listings/:id/activate` | Register on AgentDNS (idempotent) and start the heartbeat when allowed |
 | POST | `/internal/v1/listings/:id/deactivate` | ACTIVE → INACTIVE, stop the heartbeat |
 
@@ -200,6 +220,7 @@ Gateway adds these tables to the shared Postgres database (defined in `src/db/sc
 | `webhookUrl` | String? | n8n webhook URL, set by ZyndTrigger |
 | `webhookSecretEnc` | String? | AES-256-GCM ciphertext of the webhook secret (decrypted to send in `X-Zynd-Webhook-Secret`) |
 | `workflowId` | String? | n8n workflow ID, for reference |
+| `priceUsd` | Decimal(18,6)? | Price of one inbound call. Null = the Gateway default `X402_INBOUND_PRICE_USD`; `0` = free (G17) |
 | `status` | Enum | DRAFT → REGISTERING → ACTIVE / INACTIVE / ERROR |
 | `createdAt` / `updatedAt` | DateTime | Auto |
 

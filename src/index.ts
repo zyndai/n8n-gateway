@@ -18,6 +18,8 @@ if (config.databaseUrl) {
     console.error(`startup failed: ${(err as Error).message}`);
     process.exit(1);
   }
+  // G5: expired x-zynd-auth nonces are dead weight; purge them every minute.
+  setInterval(() => void services.nonces.purgeExpired().catch((err: unknown) => console.error('nonce purge failed', err)), 60_000).unref();
   services.heartbeats.resumeActive().catch((err: unknown) => console.error('heartbeat recovery failed', err));
 } else {
   console.warn('DATABASE_URL not set: heartbeat recovery and listing routes are disabled');

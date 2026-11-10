@@ -17,6 +17,8 @@ export interface NewListing {
   category: string;
   tags: string[];
   workflowId?: string;
+  /** Decimal USD per inbound call; undefined = Gateway default. */
+  priceUsd?: string;
 }
 
 export interface ListingStoreLike extends DeveloperKeySource, HeartbeatStore {
@@ -29,6 +31,15 @@ export interface ListingStoreLike extends DeveloperKeySource, HeartbeatStore {
   /** Claim a stale REGISTERING listing (previous attempt died) for a fresh registration attempt. */
   claimStaleRegistration(listingId: string, now?: Date): Promise<ListingRow | undefined>;
   loadActive(requireWebhook: boolean): Promise<ResumeTarget[]>;
+  /** Lookup by AgentDNS entity id, any developer (inbound A2A has no developer context). */
+  getByEntityId(entityId: string): Promise<ListingRow | undefined>;
+  getById(listingId: string): Promise<ListingRow | undefined>;
+  /** M2.5: bind (or, with null, clear) the n8n webhook. Undefined if the developer does not own the listing. */
+  setWebhook(developerId: string, listingId: string, webhook: { url: string; secretEnc: string } | null): Promise<ListingRow | undefined>;
+  /** G17: set (or, with null, reset to the Gateway default) the listing's inbound price. Undefined if not owned. */
+  setPrice(developerId: string, listingId: string, priceUsd: string | null): Promise<ListingRow | undefined>;
+  /** The developer's listings bound to exactly `url` (webhook `checkExists`). */
+  findByWebhookUrl(developerId: string, url: string): Promise<ListingRow[]>;
 }
 
 export class ListingStore implements ListingStoreLike {
@@ -78,6 +89,7 @@ export class ListingStore implements ListingStoreLike {
           category: input.category,
           tags: input.tags,
           workflowId: input.workflowId ?? null,
+          priceUsd: input.priceUsd ?? null,
           derivedKeyIndex: counter.next - 1,
         })
         .returning();
@@ -146,6 +158,41 @@ export class ListingStore implements ListingStoreLike {
         ),
       );
     return rows.flatMap((r) => (r.entityId ? [{ ...r, entityId: r.entityId }] : []));
+  }
+
+  async getByEntityId(entityId: string) {
+    const [row] = await this.db.select().from(n8nListing).where(eq(n8nListing.entityId, entityId)).limit(1);
+    return row;
+  }
+
+  async getById(listingId: string) {
+    const [row] = await this.db.select().from(n8nListing).where(eq(n8nListing.id, listingId)).limit(1);
+    return row;
+  }
+
+  async setWebhook(developerId: string, listingId: string, webhook: { url: string; secretEnc: string } | null) {
+    const [row] = await this.db
+      .update(n8nListing)
+      .set({ webhookUrl: webhook?.url ?? null, webhookSecretEnc: webhook?.secretEnc ?? null })
+      .where(and(eq(n8nListing.id, listingId), eq(n8nListing.developerId, developerId)))
+      .returning();
+    return row;
+  }
+
+  async setPrice(developerId: string, listingId: string, priceUsd: string | null) {
+    const [row] = await this.db
+      .update(n8nListing)
+      .set({ priceUsd })
+      .where(and(eq(n8nListing.id, listingId), eq(n8nListing.developerId, developerId)))
+      .returning();
+    return row;
+  }
+
+  async findByWebhookUrl(developerId: string, url: string) {
+    return this.db
+      .select()
+      .from(n8nListing)
+      .where(and(eq(n8nListing.developerId, developerId), eq(n8nListing.webhookUrl, url)));
   }
 
   /** HeartbeatStore: one row per listing, upserted. */

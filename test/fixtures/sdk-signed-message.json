@@ -1,0 +1,35 @@
+{
+ "kind": "message",
+ "messageId": "sdk-1",
+ "role": "user",
+ "parts": [
+  {
+   "kind": "data",
+   "data": {
+    "q": "hello",
+    "n": [
+     1,
+     2,
+     {
+      "z": true
+     }
+    ]
+   }
+  },
+  {
+   "kind": "text",
+   "text": "héllo"
+  }
+ ],
+ "metadata": {
+  "x-zynd-auth": {
+   "v": 1,
+   "entity_id": "zns:62dad5bb09cd5a45a09f25dad719d568",
+   "public_key": "ed25519:ANBaHR6iUTltVXr71FiLPG2Z2+uXL+0QoyVi6ibc3Po=",
+   "nonce": "9Y/DP83z0CoJFeSO7hxDlg==",
+   "issued_at": "2026-11-09T21:47:24.799Z",
+   "expires_at": "2026-11-09T21:48:24.799Z",
+   "signature": "ed25519:sWlP/g9OqZzOPlAFOIXJwrnIXSgBwAl2Oj6cPJkevlz4xmeerUokBYEtMGZYM1xv/yB1EkzeROSIDmEb4uI5DQ=="
+  }
+ }
+}

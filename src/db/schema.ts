@@ -44,6 +44,7 @@ export const taskStatus = pgEnum('N8nTaskStatus', [
   'COMPLETED',
   'FAILED',
   'TIMEOUT',
+  'CANCELED', // G6: tasks/cancel
 ]);
 // G8: STOPPED is a deliberate stop(), distinct from FAILED.
 export const heartbeatStatus = pgEnum('N8nHeartbeatStatus', [
@@ -97,6 +98,8 @@ export const n8nListing = pgTable(
     // G1: the Gateway replays the secret in plaintext, so it is stored encrypted (AES-256-GCM), not hashed.
     webhookSecretEnc: text('webhookSecretEnc'),
     workflowId: text('workflowId'),
+    // G17: per-listing price of one inbound call. Null = use the Gateway default (X402_INBOUND_PRICE_USD); 0 = free.
+    priceUsd: usd('priceUsd'),
     status: listingStatus('status').notNull().default('DRAFT'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

@@ -1,0 +1,20 @@
+{
+ "seedHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+ "privHex": "0xae216c2ef5247a3782c135efa279a3e4cdc61094270f5d2be58c6204b7a612c9",
+ "address": "0x9cb17ECA0e9964b9461268e5a0728C4254e58326",
+ "signature": "0xc5353f3468d0324bd672ad7a516899e0206fc830298496ef631a4113400a9d6761eb34ad6802406af58120dadd8c070f48f0d313a56dcaa018bc27db76b8341b1c",
+ "domain": {
+  "name": "USDC",
+  "version": "2",
+  "chainId": 84532,
+  "verifyingContract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+ },
+ "message": {
+  "from": "0x9cb17ECA0e9964b9461268e5a0728C4254e58326",
+  "to": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+  "value": "50000",
+  "validAfter": "1700000000",
+  "validBefore": "1700000900",
+  "nonce": "0xabababababababababababababababababababababababababababababababab"
+ }
+}

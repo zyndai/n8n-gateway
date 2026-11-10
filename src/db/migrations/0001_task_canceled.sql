@@ -1,0 +1,1 @@
+ALTER TYPE "public"."N8nTaskStatus" ADD VALUE 'CANCELED';

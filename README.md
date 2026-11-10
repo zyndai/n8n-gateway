@@ -4,7 +4,7 @@ Small standalone service between the `n8n-nodes-zynd` package and the Zynd netwo
 
 It does not run on zynd-deployer (full agent hosting, a Docker container per agent). It is one Node process built for a small memory footprint: about 80–90 MB RSS idle and about 100 MB under load with 200 live heartbeat sockets, so a 256 MB host is enough.
 
-Status: **M1 done (identity + heartbeat).** A developer key can be turned into a registered AgentDNS agent that stays alive, and listings resume after a restart. The `/n8n/v1/*` and A2A routes are still typed shells that return `501 NOT_IMPLEMENTED` until M2. Open M1 items: deploy to a staging host (M1.12) and run the exit-gate script against AgentDNS staging (M1.13); both are tracked in `docs/MILESTONES.md`.
+Status: **M2 implemented (A2A + x402), not yet run on staging.** M1: a developer key becomes a registered AgentDNS agent that stays alive and resumes after a restart. M2: the Gateway serves the n8n API (`docs/N8N_API.md`), accepts signed, optionally paid A2A calls and forwards them to an n8n webhook, and makes paid outbound calls with spend caps. Open: deploy to a staging host (M1.12), the staging runs (M1.13, M2.14, M2.17), and the choices recorded as G17-G20 in `docs/MILESTONES.md`.
 
 ```
 npm install
@@ -24,10 +24,17 @@ dashboard ──Session JWT──▶ POST /internal/v1/listings            creat
                               decrypt developer key → derive agent key → sign registration + derivation proof
                               POST AgentDNS /v1/entities  (entity_url = {PUBLIC_URL}/a/{entityId})
                               listing ACTIVE
-                           heartbeat WebSocket starts once a webhook is bound (M2.5)
+                           heartbeat WebSocket starts once a webhook is bound (POST /n8n/v1/webhooks)
 ```
 
 The internal API and the Session JWT format are documented in `docs/LLD.md` (Dashboard → Gateway internal API). Heartbeats are signed every 30 s; AgentDNS marks an agent inactive after 300 s without one. On boot the Gateway resumes the heartbeat of every ACTIVE listing.
+
+## n8n API, A2A and x402
+
+- `/n8n/v1/*`: the contract the n8n nodes build against is `docs/N8N_API.md` (types in `src/n8nContract.ts`). Needs an API key in `X-Zynd-Api-Key`; keys are stored as SHA-256 hex hashes in `n8n_api_key` (the dashboard creates them in M4).
+- `POST /a/:entityId/a2a/v1`: A2A JSON-RPC for other agents. Callers sign with `x-zynd-auth` inside `params.message.metadata`.
+- `GET /a/:entityId/.well-known/agent-card.json`: the signed A2A Agent Card SDK clients use to find the endpoint above.
+- x402 is configured with `X402_*` (see `.env.example`). A listing's own `priceUsd` (set via the dashboard API) wins; `X402_INBOUND_PRICE_USD` is the default for the rest, and with neither set inbound calls are free.
 
 ## Database (Drizzle + Postgres)
 
@@ -67,3 +74,5 @@ DATABASE_URL=postgresql://... npm run measure:memory
 ```
 
 Last measured (M1.14): idle 78–88 MB, peak 94–101 MB. The script exits non-zero if it goes over the budget in the PRD.
+
+After M2 (same machine, same script, two runs each): the M1 build idled at 91.0–91.6 MB and peaked at 102–104 MB; the M2 build idled at 95.3–95.8 MB and peaked at 107.7–107.9 MB. That is about +4 MB, which puts idle just over the 95 MB budget (the script reports it as missed). The cause is not isolated: importing `@noble/curves/secp256k1` costs only ~0.3 MB, but its first *use* (the first x402 signature) adds ~4 MB more at runtime. Decide whether to raise the budget or hunt for the delta before M5.

@@ -41,6 +41,10 @@ export class FakeAgentDns {
   sockets = new Set<import('ws').WebSocket>();
   /** Set to make POST /v1/entities answer 500 (outage). */
   failRegistration = false;
+  /** Bodies received by POST /v1/search, and what to answer with. */
+  searchCalls: unknown[] = [];
+  searchResponse: unknown = { results: [], total_found: 0, offset: 0, has_more: false };
+  searchStatus = 200;
   maxClockSkewS = 60;
   inactiveAfterMs = 300_000;
 
@@ -120,6 +124,10 @@ export class FakeAgentDns {
     if (req.method === 'GET' && get) {
       const e = this.entities.get(decodeURIComponent(get[1] as string));
       return e ? json(200, e) : json(404, { error: 'entity not found' });
+    }
+    if (req.method === 'POST' && req.url === '/v1/search') {
+      this.searchCalls.push(JSON.parse(raw));
+      return json(this.searchStatus, this.searchResponse);
     }
     if (req.method !== 'POST' || req.url !== '/v1/entities') return json(404, { error: 'not found' });
 
