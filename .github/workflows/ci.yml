@@ -37,3 +37,5 @@ jobs:
       - run: DATABASE_URL="$TEST_DATABASE_URL" npm run db:migrate
       - run: npm test
       - run: npm run build
+      # M0.19: memory guard. Boots the bundle and fails the PR if idle/peak RSS passes the budget.
+      - run: DATABASE_URL="$TEST_DATABASE_URL" npm run check:memory
