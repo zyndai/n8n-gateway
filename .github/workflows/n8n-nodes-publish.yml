@@ -1,0 +1,72 @@
+# Publishes n8n-nodes-zynd to npm with provenance when a tag named n8n-nodes-zynd@<version> is pushed
+# (a bare v* tag would be ambiguous next to the Gateway). Then runs the official n8n scanner on the
+# published version. A manual run is a dry run unless you untick the box.
+#
+# Needs: the repository secret NPM_TOKEN (an npm automation token for the package), and a package.json
+# `repository.url` that matches this GitHub repository, or npm rejects the provenance statement.
+name: n8n-nodes publish
+on:
+  push:
+    tags: ['n8n-nodes-zynd@*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run (build and pack, do not publish)
+        type: boolean
+        default: true
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance (GitHub OIDC)
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: packages/n8n-nodes-zynd
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+        working-directory: .
+      - id: version
+        name: Tag must match package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "n8n-nodes-zynd@${VERSION}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run size
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          if [ "${DRY_RUN}" = "true" ]; then
+            npm publish --provenance --access public --dry-run
+          else
+            npm publish --provenance --access public
+          fi
+
+  scan:
+    needs: publish
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The registry can take a moment to serve a new version.
+      - run: sleep 60
+      - run: npx @n8n/scan-community-package "n8n-nodes-zynd@${{ needs.publish.outputs.version }}"

@@ -1,7 +1,7 @@
-// M3.12: the paid round trip with the REAL compiled n8n-nodes-zynd package (../n8n-nodes-zynd/dist)
+// M3.12: the paid round trip with the REAL compiled n8n-nodes-zynd package (packages/n8n-nodes-zynd/dist)
 // on one side and the real Gateway on the other. Only the n8n runtime is faked: a small context
 // that sends each node request to the Gateway app, applying the credential's own `authenticate`
-// header template. Skipped when the sibling package has not been built (`npm run build` there).
+// header template. Skipped when the package has not been built (`npm run build:nodes`).
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -13,7 +13,7 @@ import type { PaymentRequirements } from '../src/services/PaymentProcessor.js';
 import { FakeRemoteAgent } from './helpers/fakeRemoteAgent.js';
 import { API_KEY, DEV, WEBHOOK_SECRET, makeGateway, type Gateway, type Job } from './helpers/harness.js';
 
-const dist = resolve(__dirname, '../../n8n-nodes-zynd/dist');
+const dist = resolve(__dirname, '../packages/n8n-nodes-zynd/dist');
 const built = existsSync(`${dist}/nodes/Zynd/Zynd.node.js`);
 const load = (p: string) => createRequire(import.meta.url)(`${dist}/${p}`);
 

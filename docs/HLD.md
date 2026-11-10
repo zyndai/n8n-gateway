@@ -33,7 +33,7 @@ The Gateway is the single service between the n8n node and the Zynd network. The
 
 | Component | Responsibility | Owns |
 | --- | --- | --- |
-| `n8n-nodes-zynd` | Verified npm package. Two nodes (Zynd, ZyndTrigger), one credential (ZyndApi). Pure HTTP client | Nothing stateful |
+| `n8n-nodes-zynd` | Verified npm package, kept in `packages/n8n-nodes-zynd/` of the same repo as the Gateway and published on its own. Two nodes (Zynd, ZyndTrigger), one credential (ZyndApi). Pure HTTP client | Nothing stateful |
 | Zynd n8n Gateway | Identity derivation, heartbeats, A2A, x402, task store, webhook forwarding | N8nApiKey, N8nListing, N8nTask, N8nHeartbeat |
 | Dashboard n8n panel | API key management, listing configuration, wallet display | Developer, DeveloperKey (existing) |
 | Shared Postgres | Persistence for dashboard and Gateway | Data at rest |

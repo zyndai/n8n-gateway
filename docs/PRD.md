@@ -5,7 +5,7 @@
 | Item | Detail |
 | --- | --- |
 | Project name | Zynd n8n Integration |
-| New repos | `zynd-n8n-gateway` (Node.js service), `n8n-nodes-zynd` (npm package) |
+| New repo | One monorepo, `zynd-n8n-gateway`: the Node.js service at the root and the `n8n-nodes-zynd` npm package in `packages/n8n-nodes-zynd/` |
 | Modified repo | `dashboard` (new route group for n8n panel) |
 | Shared infra | Existing Postgres (6 new tables; see LLD), shared with the dashboard |
 | Separate, minimal host | Gateway runs as one small Node process (target: well under 256 MB RAM), not on zynd-deployer, which is full agent-hosting infra. Dashboard stays on Vercel |
@@ -64,7 +64,7 @@ The previous attempt (`n8n-nodes-zyndai` v0.1.0) broke five n8n verification rul
 
 ## Scope
 
-**In scope:** n8n-nodes-zynd npm package, zynd-n8n-gateway service, dashboard n8n panel, Drizzle schema additions, CI/CD for both repos.
+**In scope:** n8n-nodes-zynd npm package, zynd-n8n-gateway service, dashboard n8n panel, Drizzle schema additions, CI/CD for the monorepo (Gateway and package, with a separate publish for the package).
 
 **Out of scope:** Zynd Bridge node, multi-chain x402, agent hosting (stays in zynd-deployer), AgentDNS changes, mobile dashboard.
 

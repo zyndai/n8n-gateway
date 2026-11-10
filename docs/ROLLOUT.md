@@ -4,7 +4,7 @@
 
 | Milestone | Duration | Deliverables | Gate |
 | --- | --- | --- | --- |
-| M0 — Scaffold | Week 1 | Gateway repo: Express skeleton, Drizzle schema, CI. n8n package repo: `tsc` build, CI, empty node shells | Both repos build green |
+| M0 — Scaffold | Week 1 | One monorepo: Gateway at the root (Express skeleton, Drizzle schema, CI) and the n8n package in `packages/n8n-nodes-zynd` (`tsc` build, CI, empty node shells) | Gateway and package both build green |
 | M1 — Identity + heartbeat | Week 2 | IdentityService, HeartbeatManager, registration endpoint, integration test against AgentDNS staging | Agent registered and heartbeat visible in search |
 | M2 — A2A + x402 | Week 3 | A2AHandler, PaymentProcessor, WebhookForwarder, end-to-end task flow | One paid call completes through Gateway to n8n and back |
 | M3 — n8n nodes + publish | Week 4 | Zynd.node.ts (all ops), ZyndTrigger.node.ts, ZyndApi credential. Pass scanner. `npm publish --provenance`. Submit to Creator Portal | Package on npm, scanner passes, submission filed |

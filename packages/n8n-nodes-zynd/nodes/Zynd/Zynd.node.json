@@ -1,0 +1,14 @@
+{
+	"node": "n8n-nodes-zynd.zynd",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Development", "Miscellaneous"],
+	"resources": {
+		"credentialDocumentation": [
+			{ "url": "https://github.com/zyndai/zynd-n8n-gateway/tree/main/packages/n8n-nodes-zynd#credentials" }
+		],
+		"primaryDocumentation": [
+			{ "url": "https://github.com/zyndai/zynd-n8n-gateway/tree/main/packages/n8n-nodes-zynd#readme" }
+		]
+	}
+}

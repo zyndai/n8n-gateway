@@ -4,7 +4,7 @@ Small standalone service between the `n8n-nodes-zynd` package and the Zynd netwo
 
 It does not run on zynd-deployer (full agent hosting, a Docker container per agent). It is one Node process built for a small memory footprint: about 80–90 MB RSS idle and about 100 MB under load with 200 live heartbeat sockets, so a 256 MB host is enough.
 
-Status: **M2 implemented (A2A + x402, with crash recovery for unsettled payments); M5 hardening started (per-key rate limit, `/metrics`, runbook); M3 (`n8n-nodes-zynd`) and M4 (dashboard panel) built in the sibling repos `../n8n-nodes-zynd` and `../dashboard`, none of it run on staging.** M1: a developer key becomes a registered AgentDNS agent that stays alive and resumes after a restart. M2: the Gateway serves the n8n API (`docs/N8N_API.md`), accepts signed, optionally paid A2A calls and forwards them to an n8n webhook, and makes paid outbound calls with spend caps. M4 added the dashboard's routes on this side: listing edit and delete, API keys, task history and wallet addresses under `/internal/v1` (`docs/LLD.md`). `test/n8nNodes.e2e.test.ts` and `test/dashboard.interop.test.ts` run the real package and the real dashboard client against this Gateway; they skip if the sibling repos are not checked out next to this one. Open: deploy to a staging host (M1.12), the staging runs (M1.13, M2.14, M2.17), and the choices recorded as G17-G20 in `docs/MILESTONES.md`.
+Status: **M2 implemented (A2A + x402, with crash recovery for unsettled payments); M5 hardening started (per-key rate limit, `/metrics`, runbook); M3 (`n8n-nodes-zynd`, in `packages/n8n-nodes-zynd`, an npm workspace of this repo) and M4 (dashboard panel, sibling repo `../dashboard`) built, none of it run on staging.** M1: a developer key becomes a registered AgentDNS agent that stays alive and resumes after a restart. M2: the Gateway serves the n8n API (`docs/N8N_API.md`), accepts signed, optionally paid A2A calls and forwards them to an n8n webhook, and makes paid outbound calls with spend caps. M4 added the dashboard's routes on this side: listing edit and delete, API keys, task history and wallet addresses under `/internal/v1` (`docs/LLD.md`). `test/n8nNodes.e2e.test.ts` and `test/dashboard.interop.test.ts` run the real package and the real dashboard client against this Gateway; the e2e test needs `npm run build:nodes` first (CI does it) and the dashboard one skips if the dashboard repo is not checked out next to this one. Open: deploy to a staging host (M1.12), the staging runs (M1.13, M2.14, M2.17), and the choices recorded as G17-G20 in `docs/MILESTONES.md`.
 
 ```
 npm install
@@ -12,6 +12,15 @@ cp .env.example .env   # set DATABASE_URL, PKI_ENCRYPTION_KEY, SESSION_JWT_SECRE
 npm run dev            # http://localhost:8080/health
 npm run lint && npm run typecheck && npm test && npm run build
 npm start              # runs dist/index.mjs with a 96 MB heap cap
+```
+
+This is an npm-workspaces monorepo: the Gateway is the root and the n8n package is `packages/n8n-nodes-zynd/` (one `npm install`, one lock-file). Root `lint`, `typecheck` and `test` cover the Gateway only; the package has its own:
+
+```
+npm run build:nodes   # n8n-node build -> packages/n8n-nodes-zynd/dist
+npm run lint:nodes    # n8n community-node lint rules
+npm run test:nodes    # 64 unit tests
+npm run size -w n8n-nodes-zynd   # zero dependencies, under 50 KB
 ```
 
 `PKI_ENCRYPTION_KEY` is the dashboard's key (64 hex characters). With `DATABASE_URL` set the Gateway refuses to start without it; without `DATABASE_URL` it serves `/health` only.

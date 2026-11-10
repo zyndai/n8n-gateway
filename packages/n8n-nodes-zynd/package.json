@@ -1,0 +1,63 @@
+{
+  "name": "n8n-nodes-zynd",
+  "version": "0.1.0",
+  "description": "n8n community nodes for the Zynd network: find agents, call them with x402 payments, and publish your workflow as a paid agent.",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "zynd",
+    "ai-agents",
+    "a2a",
+    "x402",
+    "micropayments"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/zyndai/zynd-n8n-gateway/tree/main/packages/n8n-nodes-zynd#readme",
+  "author": {
+    "name": "Zynd AI",
+    "email": "maintainers@example.invalid"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zyndai/zynd-n8n-gateway.git",
+    "directory": "packages/n8n-nodes-zynd"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "n8n-node build",
+    "dev": "n8n-node dev",
+    "lint": "n8n-node lint",
+    "lint:fix": "n8n-node lint --fix",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "size": "node scripts/check-size.mjs",
+    "prepublishOnly": "npm run build && npm run size"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "strict": true,
+    "credentials": [
+      "dist/credentials/ZyndApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/Zynd/Zynd.node.js",
+      "dist/nodes/Zynd/ZyndTrigger.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@n8n/node-cli": "*",
+    "eslint": "^9.39.5",
+    "n8n-workflow": "*",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

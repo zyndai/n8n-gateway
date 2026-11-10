@@ -35,6 +35,8 @@ jobs:
       - run: psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f test/fixtures/dashboard-developer-keys.sql
       - run: DATABASE_URL="$TEST_DATABASE_URL" npm run db:migrate
       - run: DATABASE_URL="$TEST_DATABASE_URL" npm run db:migrate
+      # The package is built first so test/n8nNodes.e2e.test.ts runs the compiled nodes against the Gateway.
+      - run: npm run build:nodes
       - run: npm test
       - run: npm run build
       # M0.19: memory guard. Boots the bundle and fails the PR if idle/peak RSS passes the budget.

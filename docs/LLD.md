@@ -2,18 +2,27 @@
 
 ## n8n Package — `n8n-nodes-zynd`
 
+### Repository layout (monorepo)
+
+The package lives in the Gateway's repository. The Gateway stays at the root; the package is an npm workspace under `packages/n8n-nodes-zynd/` with its own `package.json`, `tsconfig`, lint config, tests and lock-file entries. Root tooling (Gateway `tsc`, eslint, vitest, the esbuild bundle) must not pick up the package's files, and the package must not depend on anything in the Gateway: it stays a pure HTTP client with zero runtime dependencies. The Gateway's cross-package test (`test/n8nNodes.e2e.test.ts`) loads the compiled package from `packages/n8n-nodes-zynd/dist`.
+
 ### File Layout
+
+Paths are relative to `packages/n8n-nodes-zynd/`, except the workflows, which GitHub only reads from the repository root.
 
 | File | Purpose |
 | --- | --- |
 | `credentials/ZyndApi.credentials.ts` | API URL, API key, webhook secret |
 | `nodes/Zynd/Zynd.node.ts` | Action node: search, call, complete, list |
 | `nodes/Zynd/ZyndTrigger.node.ts` | Trigger node: receives inbound paid jobs |
-| `nodes/Zynd/zynd.svg` | Node icon |
-| `.github/workflows/ci.yml` | Lint + build on PR |
-| `.github/workflows/publish.yml` | `npm publish --provenance` on version tag |
+| `nodes/Zynd/zynd.svg`, `zynd.dark.svg` | Node icon, light and dark |
+| `nodes/Zynd/gateway.ts` | Shared client: builds the `/n8n/v1` URL from the credential, calls `httpRequestWithAuthentication`, maps every Gateway error to a `NodeApiError` |
+| `nodes/Zynd/Zynd.node.json`, `ZyndTrigger.node.json` | Codex metadata for the node picker |
+| `test/*.test.ts` | vitest unit tests with a fake n8n context; the full round trip against the Gateway is `test/n8nNodes.e2e.test.ts` in the repository root |
+| `/.github/workflows/n8n-nodes-ci.yml` | Package lint, typecheck, build, size check on PRs that touch `packages/n8n-nodes-zynd/**` (the Gateway keeps its own `ci.yml`) |
+| `/.github/workflows/n8n-nodes-publish.yml` | `npm publish --provenance` from `packages/n8n-nodes-zynd` on a tag named `n8n-nodes-zynd@<version>`, then the scanner on the published version |
 
-`package.json` declares `n8n-community-node-package` keyword, `peerDependencies` on `n8n-workflow`, zero `dependencies`. Build with `tsc` only — no bundler needed.
+`package.json` declares `repository.directory` (`packages/n8n-nodes-zynd`) so the npm page and provenance point at the subfolder, the `n8n-community-node-package` keyword, `peerDependencies` on `n8n-workflow`, zero `dependencies`. Build with `n8n-node build` (`tsc` plus a copy of the icons) — no bundler. Lint is `n8n-node lint` with the unmodified default config, which `n8n.strict` requires.
 
 ### ZyndApi Credential
 
