@@ -129,6 +129,11 @@ export const n8nTask = pgTable(
     status: taskStatus('status').notNull().default('PENDING'),
     paymentTxn: text('paymentTxn'),
     paymentUsd: usd('paymentUsd'),
+    // M2.20: the verified x402 proof (AES-256-GCM) while the payment is unsettled, so a crash between
+    // COMPLETED and settle can be recovered. Cleared once settled or released. `paymentLeaseAt` marks
+    // a settle in progress so exactly one process submits it.
+    paymentProofEnc: text('paymentProofEnc'),
+    paymentLeaseAt: ts('paymentLeaseAt'),
     error: text('error'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

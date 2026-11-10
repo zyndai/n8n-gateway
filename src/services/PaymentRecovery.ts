@@ -1,0 +1,120 @@
+// M2.20 (G17): inbound payments are verified up front and settled after the job COMPLETED, so a
+// Gateway crash in between leaves a verified, unsettled payment. The verified proof is therefore
+// sealed (AES-256-GCM, same key as the other secrets) onto the task row, and `PaymentRecovery`
+// sweeps for tasks that still hold one:
+//   COMPLETED                              -> settle it, exactly once (a lease row-claim picks the winner)
+//   FAILED / TIMEOUT / CANCELED            -> release it (nobody is charged)
+//   still open, older than the task cap    -> the request that was waiting died with the process: TIMEOUT, release
+//   authorization past its `validBefore`   -> release it, the facilitator would reject it anyway
+// A COMPLETED task is only touched after a grace period, so a live request that is about to settle
+// itself is never raced; the lease covers the remaining overlap.
+import { ApiError } from '../errors.js';
+import { SETTLE_LEASE_MS, TASK_TIMEOUT_MS } from './A2AHandler.js';
+import type { PaymentProcessor, VerifiedPayment } from './PaymentProcessor.js';
+import type { TaskRow, TaskStoreLike } from './TaskStore.js';
+import { decryptSecret, encryptSecret } from './keyVault.js';
+
+/** Seals a `VerifiedPayment` for storage on the task row. */
+export class PaymentProofVault {
+  constructor(private readonly masterKey: Buffer) {}
+
+  seal(v: VerifiedPayment): string {
+    return encryptSecret(JSON.stringify({ v: 1, ...v, amountMicroUsd: v.amountMicroUsd.toString() }), this.masterKey);
+  }
+
+  open(sealed: string): VerifiedPayment {
+    const o = JSON.parse(decryptSecret(sealed, this.masterKey)) as { v?: number; payer: string; amountMicroUsd: string; paymentPayload: VerifiedPayment['paymentPayload']; requirements: VerifiedPayment['requirements'] };
+    if (o.v !== 1) throw new Error('unknown payment proof version');
+    return { payer: o.payer, amountMicroUsd: BigInt(o.amountMicroUsd), paymentPayload: o.paymentPayload, requirements: o.requirements };
+  }
+}
+
+/** A COMPLETED task is left to its own request this long before the sweep settles it. */
+export const SETTLE_GRACE_MS = 30_000;
+
+export interface RecoveryResult {
+  settled: number;
+  released: number;
+  failed: number;
+}
+
+export interface PaymentRecoveryDeps {
+  tasks: Pick<TaskStoreLike, 'listUnsettled' | 'claimProof' | 'finishPayment' | 'clearProof' | 'releaseLease' | 'transition'>;
+  payments: Pick<PaymentProcessor, 'settle' | 'release'>;
+  vault: PaymentProofVault;
+  now?: () => number;
+  graceMs?: number;
+  leaseMs?: number;
+  taskTimeoutMs?: number;
+  batch?: number;
+  log?: { info(msg: string): void; error(msg: string, err?: unknown): void };
+}
+
+export class PaymentRecovery {
+  private running = false;
+
+  constructor(private readonly deps: PaymentRecoveryDeps) {}
+
+  /** One pass. Safe to call from several processes and from a timer; overlapping calls in one process are skipped. */
+  async run(): Promise<RecoveryResult> {
+    const out: RecoveryResult = { settled: 0, released: 0, failed: 0 };
+    if (this.running) return out;
+    this.running = true;
+    try {
+      const now = (this.deps.now ?? Date.now)();
+      const rows = await this.deps.tasks.listUnsettled(new Date(now - (this.deps.graceMs ?? SETTLE_GRACE_MS)), this.deps.batch ?? 100);
+      for (const row of rows) {
+        try {
+          const r = await this.recover(row, now);
+          if (r) out[r]++;
+        } catch (err) {
+          out.failed++;
+          this.deps.log?.error(`payment recovery failed for task ${row.id}`, err);
+        }
+      }
+      if (out.settled || out.released) this.deps.log?.info(`payment recovery: settled ${out.settled}, released ${out.released}`);
+      return out;
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async recover(row: TaskRow, now: number): Promise<'settled' | 'released' | undefined> {
+    const { tasks } = this.deps;
+    if (row.status === 'PENDING' || row.status === 'PROCESSING') {
+      // Younger than the task cap: the request that opened it may still be alive, or n8n may yet complete it.
+      if (now - row.createdAt.getTime() <= (this.deps.taskTimeoutMs ?? TASK_TIMEOUT_MS) + 60_000) return undefined;
+      await tasks.transition(row.id, ['PENDING', 'PROCESSING'], 'TIMEOUT', { error: 'Task timed out' });
+      await tasks.clearProof(row.id);
+      return 'released';
+    }
+    if (row.status !== 'COMPLETED') {
+      await tasks.clearProof(row.id);
+      return 'released';
+    }
+    const sealed = await tasks.claimProof(row.id, this.deps.leaseMs ?? SETTLE_LEASE_MS, new Date(now));
+    if (!sealed) return undefined; // settled, or another process holds the lease
+    let verified: VerifiedPayment;
+    try {
+      verified = this.deps.vault.open(sealed);
+    } catch (err) {
+      await tasks.clearProof(row.id); // unreadable (key changed): retrying cannot help
+      throw err;
+    }
+    const validBefore = Number(verified.paymentPayload.payload.authorization.validBefore) * 1000;
+    if (validBefore <= now) {
+      await tasks.clearProof(row.id);
+      return 'released';
+    }
+    try {
+      const settled = await this.deps.payments.settle(verified);
+      await tasks.finishPayment(row.id, settled.transaction);
+      return 'settled';
+    } catch (err) {
+      await tasks.releaseLease(row.id);
+      // A facilitator that says no will say no again: stop retrying. Anything else (network) retries next pass.
+      if (err instanceof ApiError && err.code === 'PAYMENT_FAILED') await tasks.clearProof(row.id);
+      throw err;
+    }
+  }
+}

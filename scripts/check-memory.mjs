@@ -6,8 +6,8 @@
 //
 // Two runs: bare (no database) and, when DATABASE_URL is set, with the full service graph and a
 // Postgres pool (0 listings). The with-database budget is the PRD's 95 / 110 MB. The bare budget
-// is the M0.17 figure (80 MB idle) plus the growth M2 added (bare idle is now about 82 MB, see
-// M2.18); tighten it back to 80 / 95 when M2.18 finds that delta.
+// is the M0.17 figure (80 MB idle) plus the growth M2 added (bare idle is about 82 MB). M2.18
+// found no single cause for that growth, so 85 / 100 stays.
 // The 200-socket measurement lives in `npm run measure:memory` (M1.14).
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';

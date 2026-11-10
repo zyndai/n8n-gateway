@@ -16,6 +16,7 @@
     "test": "vitest run",
     "check:memory": "node scripts/check-memory.mjs",
     "measure:memory": "tsx scripts/measure-m1-memory.ts",
+    "measure:latency": "tsx scripts/measure-latency.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:check": "drizzle-kit check"

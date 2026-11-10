@@ -11,6 +11,8 @@ export const ERROR_CATALOGUE = {
   NOT_FOUND: { status: 404, message: 'Not found' },
   LISTING_INACTIVE: { status: 409, message: 'Listing is not active' },
   TASK_TIMEOUT: { status: 504, message: 'Task timed out after 300 s' },
+  // M5.2 (G11): per-API-key rate limit on /n8n/v1/*; `Retry-After` carries the wait.
+  RATE_LIMITED: { status: 429, message: 'Rate limit exceeded' },
   // Not in the LLD table (which lists 502 with no code); added so every
   // response, including 502, carries a machine-readable code.
   GATEWAY_UNAVAILABLE: { status: 502, message: 'Gateway unavailable' },

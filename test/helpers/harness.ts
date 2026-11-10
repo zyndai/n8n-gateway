@@ -17,6 +17,8 @@ import type { ApiKeyStoreLike } from '../../src/services/ApiKeyStore.js';
 import type { NonceStoreLike } from '../../src/services/NonceStore.js';
 import type { TaskStoreLike } from '../../src/services/TaskStore.js';
 import { PaymentProcessor } from '../../src/services/PaymentProcessor.js';
+import { RateLimiter, type RateLimiterOptions } from '../../src/services/RateLimiter.js';
+import { PaymentProofVault } from '../../src/services/PaymentRecovery.js';
 import { WebhookForwarder, type ForwardPayload } from '../../src/services/WebhookForwarder.js';
 import { encryptSecret, parseMasterKey } from '../../src/services/keyVault.js';
 import { signZyndAuth, type A2AMessage } from '../../src/services/zyndAuth.js';
@@ -41,6 +43,12 @@ export interface HarnessOptions {
   price?: string;
   timeoutMs?: number;
   pollIntervalMs?: number;
+  /** Serve the app on a real loopback port and use that as the Gateway's public URL (for clients that make real requests, e.g. the SDK). */
+  listen?: boolean;
+  /** Per-key rate limit on /n8n/v1/*; unset = unlimited. */
+  rateLimit?: RateLimiterOptions;
+  /** Delay added to each fake facilitator call (verify, settle), to model a real network hop. */
+  facilitatorDelayMs?: number;
   /** Overall deadline for outbound calls. */
   callerTimeoutMs?: number;
   /** Swap in the Postgres-backed stores (the API key must already exist in them). */
@@ -50,6 +58,13 @@ export interface HarnessOptions {
 }
 
 export async function makeGateway(opts: HarnessOptions = {}) {
+  // With `listen`, the public URL has to be known before the services are built, so the server
+  // starts first and hands requests to the app once it exists.
+  const front: { handler?: (req: IncomingMessage, res: ServerResponse) => void } = {};
+  const gwServer: Server | undefined = opts.listen ? createServer((req, res) => (front.handler ? front.handler(req, res) : void res.writeHead(503).end())) : undefined;
+  if (gwServer) await new Promise<void>((r) => gwServer.listen(0, '127.0.0.1', r));
+  const publicUrl = gwServer ? `http://127.0.0.1:${(gwServer.address() as AddressInfo).port}` : 'https://gw.test';
+
   const dns = new FakeAgentDns();
   await dns.listen();
   dns.developers.set(DEV, publicKeyString(keypairFromSeed(devSeed).publicKey));
@@ -64,7 +79,7 @@ export async function makeGateway(opts: HarnessOptions = {}) {
     identity,
     agentDns,
     heartbeats: { start: (a) => void beats.started.push(a.entityId), stop: async (id) => void beats.stopped.push(id) },
-    publicUrl: 'https://gw.test',
+    publicUrl,
     heartbeatRequiresWebhook: true,
     masterKey,
     allowPrivateWebhooks: true,
@@ -94,6 +109,7 @@ export async function makeGateway(opts: HarnessOptions = {}) {
     fetch: (async (url: string) => {
       const op = url.endsWith('/verify') ? 'verify' : 'settle';
       fac.calls.push(op);
+      if (opts.facilitatorDelayMs) await new Promise((r) => setTimeout(r, opts.facilitatorDelayMs));
       return Response.json(fac[op]);
     }) as unknown as typeof fetch,
   });
@@ -106,23 +122,27 @@ export async function makeGateway(opts: HarnessOptions = {}) {
     listings,
     tasks,
     payments,
+    vault: new PaymentProofVault(masterKey),
     identity,
     forwarder: new WebhookForwarder({ connectTimeoutMs: 500, responseTimeoutMs: 1000, retryDelayMs: 10 }),
     inboundPriceUsd: opts.price,
-    publicUrl: 'https://gw.test',
+    publicUrl,
     timeoutMs: opts.timeoutMs,
     pollIntervalMs: opts.pollIntervalMs,
   });
   const caller = new AgentCaller({ agentDns, identity, payments, tasks, apiKeys, defaultMaxPaymentUsd: '0.10', pollIntervalMs: 20, timeoutMs: opts.callerTimeoutMs ?? 3000 });
 
-  const cards = new AgentCardService({ listings, identity, payments, publicUrl: 'https://gw.test', registryUrl: dns.url, defaultPriceUsd: opts.price });
+  const limiter = opts.rateLimit ? new RateLimiter(opts.rateLimit) : undefined;
+  const cards = new AgentCardService({ listings, identity, payments, publicUrl, registryUrl: dns.url, defaultPriceUsd: opts.price });
   const app = createApp({
     config: { sessionJwtSecret: 'x'.repeat(40) },
     listings: () => listings,
-    n8n: { apiKeys: () => apiKeys, agentDns: () => agentDns, listings: () => listings, caller: () => caller, a2a: () => a2a },
+    n8n: { apiKeys: () => apiKeys, agentDns: () => agentDns, listings: () => listings, caller: () => caller, a2a: () => a2a, rateLimiter: () => limiter },
     a2a: { a2a: () => a2a, nonces: () => nonces },
     card: { cards: () => cards },
   });
+
+  front.handler = app as unknown as typeof front.handler;
 
   // a live listing with a webhook bound
   const created = await listings.create(DEV, { name: 'Weather', summary: 'Forecasts', category: 'general', tags: ['w'] });
@@ -152,10 +172,12 @@ export async function makeGateway(opts: HarnessOptions = {}) {
     payments,
     a2a,
     caller,
+    limiter,
     cards,
     agentDns,
     identity,
     webhookUrl,
+    publicUrl,
     callerKey,
     message,
     rpc,
@@ -188,6 +210,10 @@ export async function makeGateway(opts: HarnessOptions = {}) {
       throw new Error('webhook never received the job');
     },
     async close() {
+      if (gwServer) {
+        gwServer.closeAllConnections();
+        await new Promise((r) => gwServer.close(r));
+      }
       n8nServer.closeAllConnections();
       await new Promise((r) => n8nServer.close(r));
       await dns.close();

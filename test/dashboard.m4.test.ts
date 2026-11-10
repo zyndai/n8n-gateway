@@ -228,3 +228,78 @@ describe('GET /internal/v1/wallet (M4.10)', () => {
     expect(JSON.stringify(res.body)).not.toMatch(/priv|seed|secret/i);
   });
 });
+
+describe('POST /internal/v1/api-keys/:id/rotate (M6.4)', () => {
+  it('returns the new plaintext once and keeps the old key working during the grace period', async () => {
+    const { body: old } = await request(app).post('/internal/v1/api-keys').set(bearer(ALICE)).send({ name: 'n8n' });
+    const res = await request(app).post(`/internal/v1/api-keys/${old.id}/rotate`).set(bearer(ALICE)).send({ graceHours: 1 });
+    expect(res.status).toBe(201);
+    expect(res.body.key).toMatch(/^zk_/);
+    expect(res.body.previous).toMatchObject({ id: old.id });
+    expect(res.body.previous).not.toHaveProperty('key');
+    expect(JSON.stringify([...keys.rows.values()])).not.toContain(res.body.key);
+
+    for (const k of [old.key, res.body.key]) {
+      expect((await request(app).get('/n8n/v1/listings').set('X-Zynd-Api-Key', k)).status).toBe(200);
+    }
+    const noBody = await request(app).post(`/internal/v1/api-keys/${old.id}/rotate`).set(bearer(ALICE));
+    expect(noBody.status).toBe(201);
+  });
+
+  it("answers 404 for another developer's key and 400 for a bad grace period", async () => {
+    const { body: made } = await request(app).post('/internal/v1/api-keys').set(bearer(ALICE)).send({ name: 'mine' });
+    expect((await request(app).post(`/internal/v1/api-keys/${made.id}/rotate`).set(bearer(BOB))).status).toBe(404);
+    expect((await request(app).post(`/internal/v1/api-keys/${made.id}/rotate`).set(bearer(ALICE)).send({ graceHours: -1 })).status).toBe(400);
+    expect(keys.rows.size).toBe(1);
+  });
+});
+
+describe('GET /internal/v1/analytics (M6.2)', () => {
+  const seed = async (dev: string, listingId: string | null, status: 'COMPLETED' | 'FAILED' | 'TIMEOUT' | 'CANCELED' | 'PENDING', opts: { paid?: string; daysAgo?: number; direction?: 'INBOUND' | 'OUTBOUND' } = {}) => {
+    const t = await tasks.create({ developerId: dev, listingId, direction: opts.direction ?? 'INBOUND', input: {}, paymentUsd: opts.paid ?? null });
+    await tasks.transition(t.id, ['PENDING'], status, opts.paid && status === 'COMPLETED' ? { paymentTxn: '0xabc' } : {});
+    if (opts.daysAgo) tasks.rows.set(t.id, { ...tasks.rows.get(t.id)!, createdAt: new Date(Date.now() - opts.daysAgo * 86_400_000) });
+  };
+
+  it('counts calls, revenue and error rate per listing and day', async () => {
+    const a = await create();
+    const b = await create();
+    await seed(ALICE, a.id, 'COMPLETED', { paid: '0.05' });
+    await seed(ALICE, a.id, 'COMPLETED', { paid: '0.05' });
+    await seed(ALICE, a.id, 'FAILED', { paid: '0.05' }); // failed calls are not charged
+    await seed(ALICE, a.id, 'TIMEOUT');
+    await seed(ALICE, a.id, 'CANCELED');
+    await seed(ALICE, a.id, 'COMPLETED', { paid: '0.05', daysAgo: 3 });
+    await seed(ALICE, b.id, 'COMPLETED');
+    await seed(ALICE, a.id, 'COMPLETED', { direction: 'OUTBOUND', paid: '9' }); // outbound is not listing revenue
+    await seed(BOB, null, 'COMPLETED', { paid: '7' });
+
+    const res = await request(app).get('/internal/v1/analytics').set(bearer(ALICE));
+    expect(res.status).toBe(200);
+    expect(res.body.days).toBe(30);
+    const ta = res.body.totals.find((t: { listingId: string }) => t.listingId === a.id);
+    expect(ta).toMatchObject({ calls: 6, completed: 3, failed: 2, revenueUsd: '0.150000' });
+    expect(ta.errorRate).toBeCloseTo(0.4);
+    expect(res.body.totals.find((t: { listingId: string }) => t.listingId === b.id)).toMatchObject({ calls: 1, errorRate: 0, revenueUsd: '0.000000' });
+    expect(res.body.totals).toHaveLength(2);
+    expect(res.body.series.filter((d: { listingId: string }) => d.listingId === a.id)).toHaveLength(2); // today + 3 days ago
+    const days = res.body.series.map((d: { day: string }) => d.day);
+    expect([...days].sort()).toEqual(days);
+  });
+
+  it('filters by listing and window, and rejects bad input', async () => {
+    const a = await create();
+    const b = await create();
+    await seed(ALICE, a.id, 'COMPLETED');
+    await seed(ALICE, b.id, 'COMPLETED');
+    await seed(ALICE, a.id, 'COMPLETED', { daysAgo: 10 });
+    const one = await request(app).get(`/internal/v1/analytics?listingId=${a.id}&days=7`).set(bearer(ALICE));
+    expect(one.body.totals).toHaveLength(1);
+    expect(one.body.totals[0]).toMatchObject({ listingId: a.id, calls: 1 });
+    for (const q of ['days=0', 'days=366', 'days=x']) {
+      expect((await request(app).get(`/internal/v1/analytics?${q}`).set(bearer(ALICE))).status, q).toBe(400);
+    }
+    const empty = await request(app).get('/internal/v1/analytics').set(bearer(BOB));
+    expect(empty.body).toMatchObject({ series: [], totals: [] });
+  });
+});

@@ -23,6 +23,7 @@ describe('error catalogue (LLD > Error Handling)', () => {
     LISTING_INACTIVE: 409,
     TASK_TIMEOUT: 504,
     PAYMENT_FAILED: 402,
+    RATE_LIMITED: 429,
   };
 
   for (const [code, status] of Object.entries(expected)) {

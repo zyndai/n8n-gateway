@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import type { ServerResponse } from 'node:http';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
+import { signZyndAuth } from '../src/services/zyndAuth.js';
 import type { PaymentRequirements } from '../src/services/PaymentProcessor.js';
 import { FakeRemoteAgent } from './helpers/fakeRemoteAgent.js';
 import { API_KEY, DEV, WEBHOOK_SECRET, makeGateway, type Gateway, type Job } from './helpers/harness.js';
@@ -41,7 +42,7 @@ describe.skipIf(!built)('n8n-nodes-zynd against the Gateway (M3.12)', () => {
       getNode: () => ({ name: 'Zynd', type: 'n8n-nodes-zynd.zynd', typeVersion: 1, position: [0, 0], parameters: {}, id: 'x' }),
       getCredentials: async () => cred,
       getInputData: () => (opts.items ?? [{}]).map((json) => ({ json })),
-      getNodeParameter: (name: string, ...r: unknown[]) => (name in params ? params[name] : r[1]),
+      getNodeParameter: (name: string, ...r: unknown[]) => (name in params ? params[name] : typeof r[0] === 'number' ? r[1] : r[0]),
       continueOnFail: () => false,
       getNodeWebhookUrl: () => opts.webhookUrl ?? gw.webhookUrl,
       getHeaderData: () => opts.headers ?? {},
@@ -101,6 +102,37 @@ describe.skipIf(!built)('n8n-nodes-zynd against the Gateway (M3.12)', () => {
     // the picker sees the listing
     const opts = await new ZyndTrigger().methods.loadOptions.getListings.call(ctx(params));
     expect(opts).toEqual([{ name: 'Weather (ACTIVE)', value: gw.listing.id }]);
+  });
+
+  it('M6.3: one workflow serves two listings; each job says which listing was called', async () => {
+    gw = await makeGateway();
+    const second = await gw.listings.create(DEV, { name: 'Traffic', summary: 'Jams', category: 'general', tags: ['t'] });
+    const params = { listingId: gw.listing.id, additionalListingIds: [second.id], responseMode: 'lastNode' };
+    const h = hooks();
+
+    expect(await h.checkExists.call(ctx(params))).toBe(false);
+    expect(await h.create.call(ctx(params))).toBe(true);
+    expect(await h.checkExists.call(ctx(params))).toBe(true);
+    const both = await gw.listings.findWebhooks(DEV, gw.webhookUrl);
+    expect(both.map((l) => l.id).sort()).toEqual([gw.listing.id, second.id].sort());
+
+    // a call to either listing reaches the one webhook and names its listing
+    playN8n('e2e-webhook-secret', (job, res) => respondJson(res, { output: { servedBy: job.listingId } }));
+    const secondEntity = (await gw.listings.get(DEV, second.id)).entityId as string;
+    for (const [id, entity] of [[gw.listing.id, gw.entityId], [second.id, secondEntity]] as const) {
+      const m = gw.message();
+      signZyndAuth(m, gw.callerKey);
+      const res = await request(gw.app).post(`/a/${encodeURIComponent(entity)}/a2a/v1`).send(gw.rpc('tasks/send', { message: m }));
+      expect(res.body.result.status.state).toBe('completed');
+      expect(res.body.result.artifacts[0].parts[0].data).toEqual({ servedBy: id });
+    }
+
+    // dropping one listing from the selection releases it on the next activation check; delete stops the rest
+    const onlyFirst = { listingId: gw.listing.id, responseMode: 'lastNode' };
+    expect(await h.checkExists.call(ctx(onlyFirst))).toBe(true);
+    expect((await gw.listings.get(DEV, second.id)).webhookUrl).toBeNull();
+    expect(await h.delete.call(ctx(params))).toBe(true);
+    expect((await gw.listings.get(DEV, gw.listing.id)).webhookUrl).toBeNull();
   });
 
   it('paid job, asynchronous: pay -> Gateway -> ZyndTrigger -> Zynd "Complete Job" -> A2A result, settled', async () => {

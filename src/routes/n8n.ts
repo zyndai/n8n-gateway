@@ -2,6 +2,7 @@
 import { Router, type Request } from 'express';
 import { ApiError } from '../errors.js';
 import { apiKeyOf, createApiKeyAuth, requirePermission } from '../middleware/apiKeyAuth.js';
+import { createRateLimit } from '../middleware/rateLimit.js';
 import type {
   BindWebhookRequest,
   CompleteJobResponse,
@@ -17,6 +18,7 @@ import type { AgentDnsClient } from '../services/AgentDnsClient.js';
 import { toGatewayError } from '../services/AgentDnsClient.js';
 import type { ApiKeyStoreLike } from '../services/ApiKeyStore.js';
 import type { ListingService, ListingView } from '../services/ListingService.js';
+import type { RateLimiter } from '../services/RateLimiter.js';
 
 export interface N8nDeps {
   apiKeys: () => ApiKeyStoreLike;
@@ -24,6 +26,8 @@ export interface N8nDeps {
   listings: () => ListingService;
   caller: () => AgentCaller;
   a2a: () => A2AHandler;
+  /** M5.2: per-key limiter; omitted = unlimited. */
+  rateLimiter?: () => RateLimiter | undefined;
 }
 
 const developerOf = (req: Request): string => apiKeyOf(req).developerId;
@@ -66,6 +70,7 @@ const webhook = (l: ListingView): WebhookView => ({ id: l.id, listingId: l.id, u
 export function createN8nRouter(deps: N8nDeps): Router {
   const router = Router();
   router.use(createApiKeyAuth(() => deps.apiKeys()));
+  router.use(createRateLimit(() => deps.rateLimiter?.()));
 
   // M2.3: search proxied to AgentDNS.
   router.get('/agents', requirePermission('search'), async (req, res) => {

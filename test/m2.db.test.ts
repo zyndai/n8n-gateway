@@ -131,6 +131,49 @@ describe.skipIf(!url)('M2 on Postgres', () => {
     });
   });
 
+  describe('payment proof (M2.20)', () => {
+    const make = async () => {
+      const t = await tasks.create({ developerId: devId, direction: 'INBOUND', input: {}, paymentUsd: '0.050000', paymentProofEnc: 'sealed' });
+      stray.tasks.push(t.id);
+      return t;
+    };
+
+    it('lets exactly one process claim the proof of a COMPLETED task, and only that kind of task', async () => {
+      const t = await make();
+      expect(await tasks.claimProof(t.id, 120_000)).toBeUndefined(); // still PENDING
+      await tasks.transition(t.id, ['PENDING'], 'COMPLETED', { output: 1 });
+      const claims = await Promise.all(Array.from({ length: 10 }, () => tasks.claimProof(t.id, 120_000)));
+      expect(claims.filter(Boolean)).toEqual(['sealed']);
+      // lease expired -> claimable again; given back -> claimable at once
+      expect(await tasks.claimProof(t.id, 120_000, new Date(Date.now() + 200_000))).toBe('sealed');
+      await tasks.releaseLease(t.id);
+      expect(await tasks.claimProof(t.id, 120_000)).toBe('sealed');
+    });
+
+    it('finishPayment records the transaction and drops the proof; clearProof drops it alone', async () => {
+      const a = await make();
+      await tasks.transition(a.id, ['PENDING'], 'COMPLETED', { output: 1 });
+      await tasks.claimProof(a.id, 120_000);
+      await tasks.finishPayment(a.id, '0xabc');
+      expect(await tasks.get(a.id)).toMatchObject({ paymentTxn: '0xabc', paymentProofEnc: null, paymentLeaseAt: null });
+      expect(await tasks.claimProof(a.id, 120_000)).toBeUndefined();
+
+      const b = await make();
+      await tasks.clearProof(b.id);
+      expect(await tasks.get(b.id)).toMatchObject({ paymentTxn: null, paymentProofEnc: null });
+    });
+
+    it('lists only tasks that still hold a proof and have been quiet since the cutoff', async () => {
+      const t = await make();
+      const done = await make();
+      await tasks.clearProof(done.id);
+      const ids = (await tasks.listUnsettled(new Date(Date.now() + 1000), 1000)).map((r) => r.id);
+      expect(ids).toContain(t.id);
+      expect(ids).not.toContain(done.id);
+      expect((await tasks.listUnsettled(new Date(Date.now() - 3600_000), 1000)).map((r) => r.id)).not.toContain(t.id);
+    });
+  });
+
   describe('nonces (M2.6)', () => {
     it('claims once even when raced, and purges only expired rows', async () => {
       const key = `zns:test:${randomUUID()}`;

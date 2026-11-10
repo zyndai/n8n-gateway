@@ -8,12 +8,15 @@ import { AgentCaller } from './AgentCaller.js';
 import { AgentDnsClient } from './AgentDnsClient.js';
 import { ApiKeyService } from './ApiKeyService.js';
 import { ApiKeyStore } from './ApiKeyStore.js';
+import { Cluster, parsePeers } from './Cluster.js';
+import { HeartbeatCoordinator } from './HeartbeatCoordinator.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
 import { IdentityService } from './IdentityService.js';
 import { ListingService } from './ListingService.js';
 import { ListingStore } from './ListingStore.js';
 import { NonceStore } from './NonceStore.js';
 import { PaymentProcessor } from './PaymentProcessor.js';
+import { PaymentProofVault, PaymentRecovery } from './PaymentRecovery.js';
 import { TaskStore } from './TaskStore.js';
 import { WalletService } from './WalletService.js';
 import { WebhookForwarder } from './WebhookForwarder.js';
@@ -24,6 +27,8 @@ export interface Services {
   store: ListingStore;
   identity: IdentityService;
   heartbeats: HeartbeatManager;
+  cluster: Cluster;
+  coordinator: HeartbeatCoordinator;
   listings: ListingService;
   agentDns: AgentDnsClient;
   apiKeys: ApiKeyStore;
@@ -32,6 +37,7 @@ export interface Services {
   tasks: TaskStore;
   nonces: NonceStore;
   payments: PaymentProcessor;
+  recovery: PaymentRecovery;
   a2a: A2AHandler;
   caller: AgentCaller;
   cards: AgentCardService;
@@ -51,13 +57,33 @@ export function getServices(): Services {
     heartbeatUrl: (id) => agentDns.heartbeatUrl(id),
     identity,
     store,
-    loadActive: () => store.loadActive(config.heartbeatRequiresWebhook),
   });
+  // M5.3: with no peers this instance owns every listing, exactly as before.
+  const coordinatorRef: { current?: HeartbeatCoordinator } = {};
+  const cluster = new Cluster({
+    selfId: config.cluster.instanceId,
+    peers: parsePeers(config.cluster.peers, config.cluster.instanceId),
+    intervalMs: config.cluster.probeIntervalMs,
+    failThreshold: config.cluster.failThreshold,
+    // A peer died or came back: take over or hand back listings now instead of at the next interval.
+    onChange: (live) => {
+      console.log(`cluster: live instances ${live.join(', ')}`);
+      void coordinatorRef.current?.reconcile().catch((err: unknown) => console.error('heartbeat reconcile failed', err));
+    },
+  });
+  const coordinator = new HeartbeatCoordinator({
+    manager: heartbeats,
+    cluster,
+    identity,
+    loadActive: () => store.loadActive(config.heartbeatRequiresWebhook),
+    log: console,
+  });
+  coordinatorRef.current = coordinator;
   const listings = new ListingService({
     store,
     identity,
     agentDns,
-    heartbeats,
+    heartbeats: coordinator,
     publicUrl: config.publicUrl,
     heartbeatRequiresWebhook: config.heartbeatRequiresWebhook,
     masterKey,
@@ -68,10 +94,18 @@ export function getServices(): Services {
   const tasks = new TaskStore(db);
   const nonces = new NonceStore(db);
   const payments = new PaymentProcessor({ config: config.x402 });
+  const vault = new PaymentProofVault(masterKey);
+  const recovery = new PaymentRecovery({
+    tasks,
+    payments,
+    vault,
+    log: { info: (m) => console.log(m), error: (m, e) => console.error(m, e) },
+  });
   const a2a = new A2AHandler({
     listings,
     tasks,
     payments,
+    vault,
     identity,
     forwarder: new WebhookForwarder(),
     inboundPriceUsd: config.x402.inboundPriceUsd,
@@ -88,11 +122,13 @@ export function getServices(): Services {
   });
   const apiKeySvc = new ApiKeyService({ store: apiKeys, developerExists: (id) => store.developerExists(id) });
   const wallet = new WalletService({ store, identity, payments });
-  services = { config, store, identity, heartbeats, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, a2a, caller, cards };
+  services = { config, store, identity, heartbeats, cluster, coordinator, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, recovery, a2a, caller, cards };
   return services;
 }
 
 export function resetServices(): void {
+  services?.coordinator.end();
+  services?.cluster.stop();
   services?.heartbeats.shutdown();
   services = undefined;
 }

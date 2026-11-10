@@ -2,7 +2,7 @@
 
 What `n8n-nodes-zynd` (M3) and the dashboard (M4) build against. The same shapes are typed in [`src/n8nContract.ts`](../src/n8nContract.ts). Change a field only by adding a new one.
 
-- **Auth:** header `X-Zynd-Api-Key: <key>` on every request. Errors: `401 AUTH_INVALID` (missing, unknown or revoked key), `401 AUTH_EXPIRED`, `403 AUTH_FORBIDDEN` (key lacks the route's permission).
+- **Auth:** header `X-Zynd-Api-Key: <key>` on every request. Errors: `401 AUTH_INVALID` (missing, unknown or revoked key), `401 AUTH_EXPIRED`, `403 AUTH_FORBIDDEN` (key lacks the route's permission), `429 RATE_LIMITED` (per-key limit, M5.2: `Retry-After` header, `details.retryAfterSec`; every response carries `RateLimit-Limit` and `RateLimit-Remaining`).
 - **Errors:** every non-2xx body is `{ "error": string, "code": string, "details"?: any }` ([LLD › Error Handling](LLD.md#error-handling)).
 - **Permissions** (`n8n_api_key.permissions`): `search`, `call`, `complete`.
 

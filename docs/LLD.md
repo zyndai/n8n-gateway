@@ -43,6 +43,8 @@
 | `create` | `POST /n8n/v1/webhooks` with `{ url, secret, listingId }` |
 | `delete` | `DELETE /n8n/v1/webhooks/:id` |
 
+**Several listings (M6.3).** `listingId` is the main listing; the optional multi-select `additionalListingIds` adds more, so one workflow serves all of them (the Gateway already allows many listings on one webhook URL). `create` binds each in order and, if one fails, unbinds the ones this call bound; `checkExists` is true only when every selected listing is bound to the URL, and releases bindings for listings no longer selected; `delete` unbinds all of them. Every job carries `listingId` and `entityId`, so a Switch node can route by listing. Workflows made before M6.3 have no extra listings and behave as before.
+
 Option `responseMode = 'lastNode'`: enables synchronous paid-call flows where the caller blocks until the result is ready.
 
 ---
@@ -110,7 +112,7 @@ Flow for `tasks/send`:
 4. Create `N8nTask` (INBOUND, PENDING; the caller's auth block is not stored)
 5. `WebhookForwarder.forward(webhookUrl, secret, job)`; PENDING → PROCESSING. A 2xx body containing `output` finishes the job here
 6. Wait until COMPLETED / FAILED / CANCELED, woken the moment `jobs/complete` lands and polling every 2 s as a fallback; after 300 s set TIMEOUT and answer `TASK_TIMEOUT` (504)
-7. If a payment was verified and the job COMPLETED, settle it (`PAYMENT-RESPONSE` header, `paymentTxn` stored); otherwise release it. Answer with an A2A `Task` (output in an artifact: a text part for strings, a data part otherwise)
+7. If a payment was verified and the job COMPLETED, settle it (after taking the settle lease) (`PAYMENT-RESPONSE` header, `paymentTxn` stored); otherwise release it. Answer with an A2A `Task` (output in an artifact: a text part for strings, a data part otherwise)
 
 `x-zynd-auth` (`zyndAuth.ts`, wire format of the TS SDK): `{ v: 1, entity_id, public_key, nonce, issued_at, expires_at, signature, fqan?, developer_proof? }`. The signature is Ed25519 over `"ZYND-A2A-MSG-v1\n" ‖ JCS(message)` with `signature` blanked. Checks, in order: version, timestamps (60 s skew, lifetime at most 10 min), `entity_id` matches the key, signature, then the nonce is claimed in `n8n_nonce` (key `entity_id:nonce`). `developer_proof` is accepted but not verified.
 
@@ -147,11 +149,11 @@ POSTs the job to the n8n webhook with `X-Zynd-Webhook-Secret` and `X-Zynd-Job-Id
 
 | Path | Component | Purpose |
 | --- | --- | --- |
-| `/dashboard/n8n` | `N8nOverview` | Active listings, key count, recent tasks |
+| `/dashboard/n8n` | `N8nOverview` | Active listings, key count, analytics (M6.2), recent tasks |
 | `/dashboard/n8n/listings` | `N8nListings` | Table with status badges, activate/deactivate |
 | `/dashboard/n8n/listings/new` | `N8nListingForm` | Name, summary, category, tags, workflow ID, price per call |
-| `/dashboard/n8n/listings/[id]` | `N8nListingDetail` | Status, endpoints, payout wallet, edit, task history, delete (G10) |
-| `/dashboard/n8n/api-keys` | `N8nApiKeys` | Table with prefix, permissions, spend, expiry |
+| `/dashboard/n8n/listings/[id]` | `N8nListingDetail` | Status, endpoints, payout wallet, edit, analytics (M6.2), task history, delete (G10) |
+| `/dashboard/n8n/api-keys` | `N8nApiKeys` | Table with prefix, permissions, spend, expiry; Rotate (M6.4) |
 | `/dashboard/n8n/api-keys/new` | `N8nApiKeyForm` | Create key — plaintext shown once |
 
 ### Dashboard API Routes
@@ -164,7 +166,9 @@ POSTs the job to the n8n webhook with `X-Zynd-Webhook-Secret` and `X-Zynd-Job-Id
 | DELETE | `/api/n8n/listings/:id` | Deactivate, stop heartbeat, delete |
 | POST | `/api/n8n/api-keys` | Create key, return plaintext once |
 | GET | `/api/n8n/api-keys` | List keys (prefix only, masked) |
+| POST | `/api/n8n/api-keys/:id/rotate` | M6.4: replacement key (plaintext once); the old key expires after `graceHours` |
 | DELETE | `/api/n8n/api-keys/:id` | Revoke key (sets `revokedAt`) |
+| GET | `/api/n8n/analytics` | M6.2: calls, error rate and revenue per listing and day (`?days&listingId`) |
 
 ### Dashboard → Gateway internal API (G9)
 
@@ -183,8 +187,10 @@ The dashboard's `/api/n8n/*` routes (Vercel) call the Gateway server to server a
 | POST | `/internal/v1/listings/:id/deactivate` | ACTIVE → INACTIVE, stop the heartbeat |
 | POST | `/internal/v1/api-keys` | `{ name, permissions?, spendCapUsd?, expiresAt? }` → 201 with the key fields **and `key`, the plaintext, shown once**. Stored: SHA-256 hash and the first 8 characters |
 | GET | `/internal/v1/api-keys` | `{ keys }`, newest first, revoked ones included. Never the hash or the plaintext |
+| POST | `/internal/v1/api-keys/:id/rotate` | M6.4. `{ graceHours? }` (0-720, default 24; 0 = at once) → 201 with the replacement key and its plaintext `key` (shown once) plus `previous`, the old key now expiring at `previous.expiresAt`. The new key copies name, permissions, spend cap, spend so far and any earlier deadline. Both keys authenticate inside the window; the old one then answers `AUTH_EXPIRED`. A revoked or expired key answers `409 CONFLICT`. While both work each spends against its own counter, so total spend can pass the cap by up to one cap |
 | DELETE | `/internal/v1/api-keys/:id` | Revoke (sets `revokedAt`, keeps the first timestamp). The key fails on its next request |
 | GET | `/internal/v1/tasks?listingId&direction&limit&offset` | `{ tasks }`, newest first, `limit` 1-100. Metadata only (status, counterparty, payment, error, timestamps); never `input` or `output` |
+| GET | `/internal/v1/analytics?days&listingId` | M6.2. `days` 1-365 (default 30), whole UTC days including today. `{ days, since, series, totals }`: `series` is one row per listing per day (`day`, `listingId`, `calls`, `completed`, `failed`, `revenueUsd`), `totals` one row per listing with `errorRate` = failed / (completed + failed), `null` before anything finished. Inbound calls only; `failed` = FAILED + TIMEOUT; revenue = settled payments of COMPLETED calls |
 | GET | `/internal/v1/wallet` | `{ payer, listings: [{ listingId, name, address }] }`: the EVM address that pays for outbound calls and each listing's receiving address. Public addresses only |
 
 Another developer's listing answers `404 NOT_FOUND`, never 403, so ids cannot be probed. `webhookSecretEnc` is never returned. A registry failure answers `502 GATEWAY_UNAVAILABLE` with `details.agentDnsStatus` and leaves the listing in ERROR; calling `activate` again retries. The dashboard never reads the `n8n_*` tables itself; it goes through these routes (G12).
@@ -246,6 +252,8 @@ Gateway adds these tables to the shared Postgres database (defined in `src/db/sc
 | `status` | Enum | PENDING → PROCESSING → COMPLETED / FAILED / TIMEOUT |
 | `paymentTxn` | String? | x402 transaction hash |
 | `paymentUsd` | Decimal? | Payment amount |
+| `paymentProofEnc` | String? | Inbound only: the verified x402 proof, AES-256-GCM sealed, kept until the payment is settled or released (M2.20). Never returned by any route |
+| `paymentLeaseAt` | DateTime? | Set while one process is settling the payment; stale after 120 s |
 | `error` | String? | Error message on failure |
 | `createdAt` / `updatedAt` | DateTime | Auto |
 
@@ -294,6 +302,7 @@ All Gateway errors follow the shape `{ error, code, details? }`. The n8n node ma
 | --- | --- | --- | --- |
 | Invalid API key | `AUTH_INVALID` | 401 | NodeApiError: Invalid API key |
 | Key expired | `AUTH_EXPIRED` | 401 | NodeApiError: API key expired |
+| Over the per-key rate limit (M5.2) | `RATE_LIMITED` | 429 | NodeApiError: Rate limit exceeded (`Retry-After` header and `details.retryAfterSec` say when to retry) |
 | Permission denied | `AUTH_FORBIDDEN` | 403 | NodeApiError: Requires permission X |
 | Spend cap exceeded | `PAYMENT_CAP` | 402 | NodeApiError: Spend cap exceeded |
 | Agent not found | `NOT_FOUND` | 404 | NodeApiError: Agent not found |

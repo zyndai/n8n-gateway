@@ -97,6 +97,11 @@ export class HeartbeatManager {
     return this.entries.size;
   }
 
+  /** Entity ids with a running heartbeat (M5.3). */
+  entityIds(): string[] {
+    return [...this.entries.keys()];
+  }
+
   has(entityId: string): boolean {
     return this.entries.has(entityId);
   }
@@ -118,6 +123,18 @@ export class HeartbeatManager {
     this.entries.delete(entityId);
     this.teardown(entry);
     await this.persist(entry.listingId, { status: 'STOPPED' });
+  }
+
+  /**
+   * M5.3: hand the listing to another instance. Closes the socket but leaves the row alone: the new
+   * owner is writing it, and a STOPPED from here could land after its ACTIVE.
+   */
+  release(entityId: string): void {
+    const entry = this.entries.get(entityId);
+    if (!entry) return;
+    entry.stopped = true;
+    this.entries.delete(entityId);
+    this.teardown(entry);
   }
 
   /** Process shutdown: close everything without touching the DB, so listings resume on restart. */

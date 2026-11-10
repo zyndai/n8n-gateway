@@ -15,6 +15,8 @@ export interface NewApiKey {
   permissions: string[];
   spendCapUsd: string | null;
   expiresAt: Date | null;
+  /** M6.4: a rotated key inherits what its predecessor already spent, so rotating never resets a cap. */
+  spentUsd?: string;
 }
 
 export interface ApiKeyStoreLike {
@@ -24,6 +26,10 @@ export interface ApiKeyStoreLike {
   create(key: NewApiKey): Promise<ApiKeyRow>;
   /** M4.2: the developer's keys, newest first, revoked ones included. */
   listByDeveloper(developerId: string): Promise<ApiKeyRow[]>;
+  /** M6.4: one of the developer's keys; undefined if the developer does not own it. */
+  get(developerId: string, id: string): Promise<ApiKeyRow | undefined>;
+  /** M6.4: set when the key stops working. Undefined if the developer does not own it. */
+  setExpiry(developerId: string, id: string, expiresAt: Date): Promise<ApiKeyRow | undefined>;
   /** M4.2: soft-delete. Keeps the original `revokedAt` if already revoked. Undefined if the developer does not own it. */
   revoke(developerId: string, id: string, at: Date): Promise<ApiKeyRow | undefined>;
   /**
@@ -51,6 +57,24 @@ export class ApiKeyStore implements ApiKeyStoreLike {
 
   async listByDeveloper(developerId: string) {
     return this.db.select().from(n8nApiKey).where(eq(n8nApiKey.developerId, developerId)).orderBy(desc(n8nApiKey.createdAt));
+  }
+
+  async get(developerId: string, id: string) {
+    const [row] = await this.db
+      .select()
+      .from(n8nApiKey)
+      .where(and(eq(n8nApiKey.id, id), eq(n8nApiKey.developerId, developerId)))
+      .limit(1);
+    return row;
+  }
+
+  async setExpiry(developerId: string, id: string, expiresAt: Date) {
+    const [row] = await this.db
+      .update(n8nApiKey)
+      .set({ expiresAt })
+      .where(and(eq(n8nApiKey.id, id), eq(n8nApiKey.developerId, developerId)))
+      .returning();
+    return row;
   }
 
   async revoke(developerId: string, id: string, at: Date) {

@@ -106,4 +106,42 @@ describe.skipIf(!url)('M4 on Postgres', () => {
     expect((await tasks.listByDeveloper(A, { direction: 'OUTBOUND', limit: 1, offset: 0 })).map((t) => t.id)).toEqual([ids[1]]);
     expect((await tasks.listByDeveloper(A, { listingId: l.id, limit: 1, offset: 1 })).map((t) => t.id)).toEqual([ids[0]]);
   });
+
+  it('M6.4: rotates a key in Postgres: copy with the spend so far, old key expires after the grace period', async () => {
+    const svc = new ApiKeyService({ store: keys, developerExists: (d) => listings.developerExists(d) });
+    const made = await svc.create(A, { name: 'rot', spendCapUsd: '5', permissions: ['search'] });
+    expect(await keys.reserveSpend(made.id, 1_250_000n)).toBe(true);
+    const { created, previous } = await svc.rotate(A, made.id, { graceHours: 1 });
+    const fresh = await keys.findByHash(hashApiKey(created.key));
+    expect(fresh).toMatchObject({ name: 'rot', permissions: ['search'], spendCapUsd: '5.000000', spentUsd: '1.250000', revokedAt: null });
+    expect(previous.expiresAt!.getTime()).toBeGreaterThan(Date.now() + 59 * 60_000);
+    expect(previous.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60_000);
+    await expect(svc.rotate(B, made.id, {})).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('M6.2: aggregates inbound calls per listing and UTC day', async () => {
+    const l = await listings.createListing(A, input);
+    const mk = async (status: 'COMPLETED' | 'FAILED' | 'TIMEOUT' | 'CANCELED', paid?: string, direction: 'INBOUND' | 'OUTBOUND' = 'INBOUND') => {
+      const t = await tasks.create({ developerId: A, listingId: l.id, direction, input: {}, paymentUsd: paid ?? null });
+      await tasks.transition(t.id, ['PENDING'], status, paid && status === 'COMPLETED' ? { paymentTxn: '0xtx' } : {});
+      return t;
+    };
+    await mk('COMPLETED', '0.05');
+    await mk('COMPLETED', '0.05');
+    await mk('FAILED', '0.05');
+    await mk('TIMEOUT');
+    await mk('CANCELED');
+    await mk('COMPLETED', '9', 'OUTBOUND');
+    const old = await mk('COMPLETED', '0.01');
+    await getDb().update(n8nTask).set({ createdAt: new Date(Date.now() - 5 * 86_400_000) }).where(eq(n8nTask.id, old.id));
+
+    const rows = await tasks.analytics(A, { since: new Date(Date.now() - 30 * 86_400_000), listingId: l.id });
+    expect(rows).toHaveLength(2);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(rows.find((r) => r.day === today)).toEqual({ day: today, listingId: l.id, calls: 5, completed: 2, failed: 2, revenueUsd: '0.100000' });
+    expect(rows[0]!.day < today).toBe(true);
+    expect(rows[0]).toMatchObject({ calls: 1, completed: 1, failed: 0, revenueUsd: '0.010000' });
+    expect(await tasks.analytics(B, { since: new Date(0) })).toEqual([]);
+    expect(await tasks.analytics(A, { since: new Date(Date.now() - 86_400_000), listingId: 'nope' })).toEqual([]);
+  });
 });

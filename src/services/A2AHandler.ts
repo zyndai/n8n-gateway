@@ -12,6 +12,7 @@ import type { ListingRow } from './ListingStore.js';
 import type { Ed25519Keypair } from './IdentityService.js';
 import type { PaymentProcessor, HeaderBag, PaymentRequirements, VerifiedPayment } from './PaymentProcessor.js';
 import { effectivePriceUsd, formatUsd } from './money.js';
+import type { PaymentProofVault } from './PaymentRecovery.js';
 import { isOpen, type TaskRow, type TaskStoreLike } from './TaskStore.js';
 import { TaskWaiter } from './TaskWaiter.js';
 import { ZYND_AUTH_KEY, type A2AMessage, type VerifiedCaller } from './zyndAuth.js';
@@ -19,6 +20,8 @@ import type { ForwardPayload, ForwardResult } from './WebhookForwarder.js';
 
 export const TASK_TIMEOUT_MS = 300_000;
 export const POLL_INTERVAL_MS = 2_000;
+/** M2.20: how long a settle lease holds before another process may retry the same payment. */
+export const SETTLE_LEASE_MS = 120_000;
 
 /** 402 that also tells the caller what to pay (`PAYMENT-REQUIRED` response header). */
 export class PaymentRequiredError extends ApiError {
@@ -43,6 +46,8 @@ export interface A2AHandlerDeps {
   identity: { getListingKeypair(ref: { listingId: string; developerId: string; derivedKeyIndex: number }): Promise<Ed25519Keypair> };
   forwarder: { forward(url: string, secret: string, payload: ForwardPayload): Promise<ForwardResult> };
   waiter?: TaskWaiter;
+  /** M2.20: when set, the verified payment is sealed onto the task so a crash before settlement can be recovered. */
+  vault?: PaymentProofVault;
   /** Default USD price of one inbound call, used by listings without their own price. Unset = free (x402 headers are ignored). */
   inboundPriceUsd?: string;
   publicUrl: string;
@@ -136,6 +141,7 @@ export class A2AHandler {
       direction: 'INBOUND',
       input: clean,
       paymentUsd: verified ? formatUsd(verified.amountMicroUsd) : null,
+      paymentProofEnc: verified && this.deps.vault ? this.deps.vault.seal(verified) : null,
     });
 
     // 5. Forward to n8n.
@@ -156,7 +162,7 @@ export class A2AHandler {
       }
     } catch (err) {
       await this.deps.tasks.transition(task.id, ['PENDING', 'PROCESSING'], 'FAILED', { error: err instanceof ApiError ? err.message : 'Could not reach the workflow' });
-      if (verified) this.deps.payments.release(verified);
+      if (verified) await this.drop(task.id, verified);
       throw err;
     }
 
@@ -167,12 +173,24 @@ export class A2AHandler {
     let paymentResponse: string | undefined;
     if (verified) {
       if (done.status === 'COMPLETED') {
-        const settled = await this.deps.payments.settle(verified);
-        await this.deps.tasks.setPayment(task.id, { paymentTxn: settled.transaction });
-        done.paymentTxn = settled.transaction;
-        paymentResponse = Buffer.from(JSON.stringify({ success: true, transaction: settled.transaction, payer: settled.payer, network: verified.requirements.network }), 'utf8').toString('base64');
+        // With a vault, take the settle lease first: the recovery sweep may be after the same payment.
+        const mine = this.deps.vault ? await this.deps.tasks.claimProof(task.id, SETTLE_LEASE_MS) : 'untracked';
+        if (mine) {
+          let settled;
+          try {
+            settled = await this.deps.payments.settle(verified);
+          } catch (err) {
+            // The caller is told the payment failed, so it must not be charged later by a retry.
+            await this.drop(task.id, verified);
+            throw err;
+          }
+          if (this.deps.vault) await this.deps.tasks.finishPayment(task.id, settled.transaction);
+          else await this.deps.tasks.setPayment(task.id, { paymentTxn: settled.transaction });
+          done.paymentTxn = settled.transaction;
+          paymentResponse = Buffer.from(JSON.stringify({ success: true, transaction: settled.transaction, payer: settled.payer, network: verified.requirements.network }), 'utf8').toString('base64');
+        }
       } else {
-        this.deps.payments.release(verified);
+        await this.drop(task.id, verified);
       }
     }
     if (done.status === 'TIMEOUT') throw new ApiError('TASK_TIMEOUT');
@@ -208,6 +226,12 @@ export class A2AHandler {
   }
 
   // --- internals -----------------------------------------------------------------------------
+
+  /** The payment will not be taken: free the in-process nonce and forget the stored proof. */
+  private async drop(taskId: string, verified: VerifiedPayment): Promise<void> {
+    this.deps.payments.release(verified);
+    if (this.deps.vault) await this.deps.tasks.clearProof(taskId);
+  }
 
   private async finish(taskId: string, result: JobResult): Promise<TaskRow | undefined> {
     const row =

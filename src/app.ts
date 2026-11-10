@@ -4,13 +4,19 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { createCardRouter, type CardDeps } from './routes/card.js';
 import { createA2aRouter, type A2aDeps } from './routes/a2a.js';
 import { createDashboardRouter, type DashboardDeps } from './routes/dashboard.js';
+import { Metrics, metricsHandler } from './observability/metrics.js';
 import { healthRouter } from './routes/health.js';
+import { RateLimiter } from './services/RateLimiter.js';
 import { createN8nRouter, type N8nDeps } from './routes/n8n.js';
 import { getServices } from './services/container.js';
 import type { ListingService } from './services/ListingService.js';
 
 export interface AppDeps {
-  config?: Pick<Config, 'sessionJwtSecret'>;
+  config?: Pick<Config, 'sessionJwtSecret'> & Partial<Pick<Config, 'metricsToken' | 'rateLimit'>>;
+  /** M5.2: the per-key limiter for /n8n/v1/*. Defaults to one built from `config.rateLimit`. */
+  rateLimiter?: RateLimiter;
+  /** M5.1: recorded for every request and served at /metrics when a token is configured. */
+  metrics?: Metrics;
   /** Resolved per request so the app can boot without a database. Defaults to the real services. */
   listings?: () => ListingService;
   dashboard?: Partial<Pick<DashboardDeps, 'apiKeys' | 'tasks' | 'wallet'>>;
@@ -23,9 +29,15 @@ export interface AppDeps {
 export function createApp(deps: AppDeps = {}): Express {
   const app = express();
   app.disable('x-powered-by');
+  const config = deps.config ?? loadConfig();
+  const metrics = deps.metrics ?? new Metrics();
+  const rateLimiter = deps.rateLimiter ?? new RateLimiter(config.rateLimit ?? loadConfig().rateLimit);
+  app.use(metrics.middleware());
   app.use(express.json({ limit: '1mb' }));
 
   app.use(healthRouter);
+  // Without METRICS_TOKEN there is no /metrics route at all.
+  if (config.metricsToken) app.get('/metrics', metricsHandler(metrics, config.metricsToken));
   const listings = deps.listings ?? (() => getServices().listings);
   app.use(
     '/n8n/v1',
@@ -35,6 +47,7 @@ export function createApp(deps: AppDeps = {}): Express {
       listings,
       caller: () => getServices().caller,
       a2a: () => getServices().a2a,
+      rateLimiter: () => rateLimiter,
       ...deps.n8n,
     }),
   );
@@ -46,7 +59,7 @@ export function createApp(deps: AppDeps = {}): Express {
   app.use(
     '/internal/v1',
     createDashboardRouter({
-      config: deps.config ?? loadConfig(),
+      config,
       listings,
       apiKeys: () => getServices().apiKeySvc,
       tasks: () => getServices().tasks,

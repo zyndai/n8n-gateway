@@ -5,6 +5,7 @@ import { createSessionAuth } from '../middleware/sessionAuth.js';
 import type { ApiKeyService } from '../services/ApiKeyService.js';
 import type { NewListing } from '../services/ListingStore.js';
 import type { ListingService, ListingUpdate } from '../services/ListingService.js';
+import { summarizeAnalytics } from '../services/analytics.js';
 import type { TaskRow, TaskStoreLike } from '../services/TaskStore.js';
 import type { WalletService } from '../services/WalletService.js';
 
@@ -12,7 +13,7 @@ export interface DashboardDeps {
   config: Pick<Config, 'sessionJwtSecret'>;
   listings: () => ListingService;
   apiKeys: () => ApiKeyService;
-  tasks: () => Pick<TaskStoreLike, 'listByDeveloper'>;
+  tasks: () => Pick<TaskStoreLike, 'listByDeveloper' | 'analytics'>;
   wallet: () => WalletService;
 }
 
@@ -161,6 +162,12 @@ export function createDashboardRouter(deps: DashboardDeps): Router {
     res.json({ keys: await deps.apiKeys().list(developerOf(req)) });
   });
 
+  // M6.4: issue a replacement and let the old key expire after `graceHours` (default 24, 0 = now).
+  router.post('/api-keys/:id/rotate', async (req, res) => {
+    const out = await deps.apiKeys().rotate(developerOf(req), req.params.id as string, req.body);
+    res.status(201).json({ ...out.created, previous: out.previous });
+  });
+
   router.delete('/api-keys/:id', async (req, res) => {
     res.json(await deps.apiKeys().revoke(developerOf(req), req.params.id as string));
   });
@@ -178,6 +185,18 @@ export function createDashboardRouter(deps: DashboardDeps): Router {
       offset: queryInt(req.query.offset, 'offset', 0, 0, 100_000),
     });
     res.json({ tasks: rows.map(taskItem) });
+  });
+
+  // M6.2: listing analytics. ?days(1-365, default 30)&listingId. Inbound calls only, UTC days.
+  router.get('/analytics', async (req, res) => {
+    const listingId = req.query.listingId;
+    if (listingId !== undefined && (typeof listingId !== 'string' || listingId.length > 100)) throw new ApiError('BAD_REQUEST', 'listingId must be a string');
+    const days = queryInt(req.query.days, 'days', 30, 1, 365);
+    const now = new Date();
+    // Start of the UTC day (days - 1) days ago, so `days` full calendar days including today.
+    const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (days - 1)));
+    const series = await deps.tasks().analytics(developerOf(req), { since, ...(listingId ? { listingId } : {}) });
+    res.json({ days, since: since.toISOString(), ...summarizeAnalytics(series) });
   });
 
   // M4.10: public EVM addresses only.
