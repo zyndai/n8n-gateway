@@ -1,15 +1,31 @@
 // n8n API keys (LLD > N8nApiKey): lookup by SHA-256 hash, lastUsedAt, and the atomic spend
 // counter behind spend caps (M2.16).
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { n8nApiKey } from '../db/schema.js';
 import { formatUsd } from './money.js';
 
 export type ApiKeyRow = typeof n8nApiKey.$inferSelect;
 
+export interface NewApiKey {
+  developerId: string;
+  name: string;
+  keyHash: string;
+  keyPrefix: string;
+  permissions: string[];
+  spendCapUsd: string | null;
+  expiresAt: Date | null;
+}
+
 export interface ApiKeyStoreLike {
   findByHash(keyHash: string): Promise<ApiKeyRow | undefined>;
   touch(id: string, at: Date): Promise<void>;
+  /** M4.2: store a new key (hash only). */
+  create(key: NewApiKey): Promise<ApiKeyRow>;
+  /** M4.2: the developer's keys, newest first, revoked ones included. */
+  listByDeveloper(developerId: string): Promise<ApiKeyRow[]>;
+  /** M4.2: soft-delete. Keeps the original `revokedAt` if already revoked. Undefined if the developer does not own it. */
+  revoke(developerId: string, id: string, at: Date): Promise<ApiKeyRow | undefined>;
   /**
    * Add `microUsd` to `spentUsd` only if it keeps the total within `spendCapUsd` (no cap = always).
    * One conditional UPDATE, so concurrent calls can never overshoot the cap. False if refused.
@@ -24,6 +40,25 @@ export class ApiKeyStore implements ApiKeyStoreLike {
 
   async findByHash(keyHash: string) {
     const [row] = await this.db.select().from(n8nApiKey).where(eq(n8nApiKey.keyHash, keyHash)).limit(1);
+    return row;
+  }
+
+  async create(key: NewApiKey) {
+    const [row] = await this.db.insert(n8nApiKey).values(key).returning();
+    if (!row) throw new Error('api key insert returned no row');
+    return row;
+  }
+
+  async listByDeveloper(developerId: string) {
+    return this.db.select().from(n8nApiKey).where(eq(n8nApiKey.developerId, developerId)).orderBy(desc(n8nApiKey.createdAt));
+  }
+
+  async revoke(developerId: string, id: string, at: Date) {
+    const [row] = await this.db
+      .update(n8nApiKey)
+      .set({ revokedAt: sql`COALESCE(${n8nApiKey.revokedAt}, ${at.toISOString()}::timestamp)` })
+      .where(and(eq(n8nApiKey.id, id), eq(n8nApiKey.developerId, developerId)))
+      .returning();
     return row;
   }
 

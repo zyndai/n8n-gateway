@@ -21,6 +21,14 @@ export interface NewListing {
   priceUsd?: string;
 }
 
+/** Fields a developer may edit after creation (LLD > Dashboard API Routes: name, summary, tags). */
+export interface ListingPatch {
+  name?: string;
+  summary?: string;
+  tags?: string[];
+  workflowId?: string | null;
+}
+
 export interface ListingStoreLike extends DeveloperKeySource, HeartbeatStore {
   developerExists(developerId: string): Promise<boolean>;
   createListing(developerId: string, input: NewListing): Promise<ListingRow>;
@@ -40,6 +48,10 @@ export interface ListingStoreLike extends DeveloperKeySource, HeartbeatStore {
   setPrice(developerId: string, listingId: string, priceUsd: string | null): Promise<ListingRow | undefined>;
   /** The developer's listings bound to exactly `url` (webhook `checkExists`). */
   findByWebhookUrl(developerId: string, url: string): Promise<ListingRow[]>;
+  /** M4.1: edit descriptive fields. Undefined if the developer does not own the listing. */
+  update(developerId: string, listingId: string, patch: ListingPatch): Promise<ListingRow | undefined>;
+  /** M4.1: delete the listing (its heartbeat row goes with it; tasks keep their history). Undefined if not owned. */
+  remove(developerId: string, listingId: string): Promise<ListingRow | undefined>;
 }
 
 export class ListingStore implements ListingStoreLike {
@@ -183,6 +195,23 @@ export class ListingStore implements ListingStoreLike {
     const [row] = await this.db
       .update(n8nListing)
       .set({ priceUsd })
+      .where(and(eq(n8nListing.id, listingId), eq(n8nListing.developerId, developerId)))
+      .returning();
+    return row;
+  }
+
+  async update(developerId: string, listingId: string, patch: ListingPatch) {
+    const [row] = await this.db
+      .update(n8nListing)
+      .set(patch)
+      .where(and(eq(n8nListing.id, listingId), eq(n8nListing.developerId, developerId)))
+      .returning();
+    return row;
+  }
+
+  async remove(developerId: string, listingId: string) {
+    const [row] = await this.db
+      .delete(n8nListing)
       .where(and(eq(n8nListing.id, listingId), eq(n8nListing.developerId, developerId)))
       .returning();
     return row;

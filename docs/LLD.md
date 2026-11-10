@@ -149,7 +149,8 @@ POSTs the job to the n8n webhook with `X-Zynd-Webhook-Secret` and `X-Zynd-Job-Id
 | --- | --- | --- |
 | `/dashboard/n8n` | `N8nOverview` | Active listings, key count, recent tasks |
 | `/dashboard/n8n/listings` | `N8nListings` | Table with status badges, activate/deactivate |
-| `/dashboard/n8n/listings/new` | `N8nListingForm` | Name, summary, category, tags, workflow ID |
+| `/dashboard/n8n/listings/new` | `N8nListingForm` | Name, summary, category, tags, workflow ID, price per call |
+| `/dashboard/n8n/listings/[id]` | `N8nListingDetail` | Status, endpoints, payout wallet, edit, task history, delete (G10) |
 | `/dashboard/n8n/api-keys` | `N8nApiKeys` | Table with prefix, permissions, spend, expiry |
 | `/dashboard/n8n/api-keys/new` | `N8nApiKeyForm` | Create key — plaintext shown once |
 
@@ -176,11 +177,17 @@ The dashboard's `/api/n8n/*` routes (Vercel) call the Gateway server to server a
 | POST | `/internal/v1/listings` | Create a DRAFT listing (`name`, `summary`, `category`, `tags[]`, `workflowId?`, `priceUsd?`) and allocate its `derivedKeyIndex` |
 | GET | `/internal/v1/listings` | The developer's listings, each with its heartbeat status |
 | GET | `/internal/v1/listings/:id` | One listing |
-| PATCH | `/internal/v1/listings/:id` | Set the listing's price: `{ "priceUsd": "0.05" }`, `"0"` for free, `null` for the Gateway default |
+| PATCH | `/internal/v1/listings/:id` | Edit any of `name`, `summary`, `tags`, `workflowId` (`null` clears) and `priceUsd` (`"0.05"`, `"0"` for free, `null` for the Gateway default). The Gateway record and agent card change; the AgentDNS copy keeps its registered values |
+| DELETE | `/internal/v1/listings/:id` | Stop the heartbeat, forget the keypair, delete the listing. Tasks stay as history with a null `listingId` |
 | POST | `/internal/v1/listings/:id/activate` | Register on AgentDNS (idempotent) and start the heartbeat when allowed |
 | POST | `/internal/v1/listings/:id/deactivate` | ACTIVE → INACTIVE, stop the heartbeat |
+| POST | `/internal/v1/api-keys` | `{ name, permissions?, spendCapUsd?, expiresAt? }` → 201 with the key fields **and `key`, the plaintext, shown once**. Stored: SHA-256 hash and the first 8 characters |
+| GET | `/internal/v1/api-keys` | `{ keys }`, newest first, revoked ones included. Never the hash or the plaintext |
+| DELETE | `/internal/v1/api-keys/:id` | Revoke (sets `revokedAt`, keeps the first timestamp). The key fails on its next request |
+| GET | `/internal/v1/tasks?listingId&direction&limit&offset` | `{ tasks }`, newest first, `limit` 1-100. Metadata only (status, counterparty, payment, error, timestamps); never `input` or `output` |
+| GET | `/internal/v1/wallet` | `{ payer, listings: [{ listingId, name, address }] }`: the EVM address that pays for outbound calls and each listing's receiving address. Public addresses only |
 
-Another developer's listing answers `404 NOT_FOUND`, never 403, so ids cannot be probed. `webhookSecretEnc` is never returned. A registry failure answers `502 GATEWAY_UNAVAILABLE` with `details.agentDnsStatus` and leaves the listing in ERROR; calling `activate` again retries. PATCH and DELETE arrive with M4.1.
+Another developer's listing answers `404 NOT_FOUND`, never 403, so ids cannot be probed. `webhookSecretEnc` is never returned. A registry failure answers `502 GATEWAY_UNAVAILABLE` with `details.agentDnsStatus` and leaves the listing in ERROR; calling `activate` again retries. The dashboard never reads the `n8n_*` tables itself; it goes through these routes (G12).
 
 ---
 

@@ -3,7 +3,7 @@ import { loadConfig, type Config } from './config.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { createCardRouter, type CardDeps } from './routes/card.js';
 import { createA2aRouter, type A2aDeps } from './routes/a2a.js';
-import { createDashboardRouter } from './routes/dashboard.js';
+import { createDashboardRouter, type DashboardDeps } from './routes/dashboard.js';
 import { healthRouter } from './routes/health.js';
 import { createN8nRouter, type N8nDeps } from './routes/n8n.js';
 import { getServices } from './services/container.js';
@@ -13,6 +13,7 @@ export interface AppDeps {
   config?: Pick<Config, 'sessionJwtSecret'>;
   /** Resolved per request so the app can boot without a database. Defaults to the real services. */
   listings?: () => ListingService;
+  dashboard?: Partial<Pick<DashboardDeps, 'apiKeys' | 'tasks' | 'wallet'>>;
   /** Per-route-group overrides; each defaults to the real services, resolved per request. */
   n8n?: Partial<N8nDeps>;
   a2a?: Partial<A2aDeps>;
@@ -47,6 +48,10 @@ export function createApp(deps: AppDeps = {}): Express {
     createDashboardRouter({
       config: deps.config ?? loadConfig(),
       listings,
+      apiKeys: () => getServices().apiKeySvc,
+      tasks: () => getServices().tasks,
+      wallet: () => getServices().wallet,
+      ...deps.dashboard,
     }),
   );
 

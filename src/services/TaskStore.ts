@@ -1,7 +1,7 @@
 // n8n_task persistence (LLD > N8nTask). Every status change is a compare-and-set on the current
 // status, so a late `jobs/complete` can never overwrite a TIMEOUT or CANCELED, and two writers
 // cannot both finish the same task.
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { n8nTask } from '../db/schema.js';
 
@@ -28,11 +28,20 @@ export interface TaskPatch {
   paymentUsd?: string | null;
 }
 
+export interface TaskQuery {
+  listingId?: string;
+  direction?: TaskRow['direction'];
+  limit: number;
+  offset: number;
+}
+
 export interface TaskStoreLike {
   create(task: NewTask): Promise<TaskRow>;
   get(id: string): Promise<TaskRow | undefined>;
   /** Move a task to `to` only if it is currently in one of `from`; undefined if it was not. */
   transition(id: string, from: TaskStatus[], to: TaskStatus, patch?: TaskPatch): Promise<TaskRow | undefined>;
+  /** M4.9: the developer's tasks, newest first. */
+  listByDeveloper(developerId: string, query: TaskQuery): Promise<TaskRow[]>;
   /** Record payment details without changing status. */
   setPayment(id: string, patch: Pick<TaskPatch, 'paymentTxn' | 'paymentUsd'>): Promise<void>;
 }
@@ -69,6 +78,22 @@ export class TaskStore implements TaskStoreLike {
       .where(and(eq(n8nTask.id, id), inArray(n8nTask.status, from)))
       .returning();
     return row;
+  }
+
+  async listByDeveloper(developerId: string, q: TaskQuery) {
+    return this.db
+      .select()
+      .from(n8nTask)
+      .where(
+        and(
+          eq(n8nTask.developerId, developerId),
+          q.listingId ? eq(n8nTask.listingId, q.listingId) : undefined,
+          q.direction ? eq(n8nTask.direction, q.direction) : undefined,
+        ),
+      )
+      .orderBy(desc(n8nTask.createdAt))
+      .limit(q.limit)
+      .offset(q.offset);
   }
 
   async setPayment(id: string, patch: Pick<TaskPatch, 'paymentTxn' | 'paymentUsd'>) {

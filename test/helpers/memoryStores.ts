@@ -1,11 +1,11 @@
 // In-memory twins of ApiKeyStore / TaskStore / NonceStore with the same atomic semantics
 // (single-threaded JS makes each method one atomic step, like the single SQL statement it mirrors).
 import { randomUUID } from 'node:crypto';
-import type { ApiKeyRow, ApiKeyStoreLike } from '../../src/services/ApiKeyStore.js';
+import type { ApiKeyRow, ApiKeyStoreLike, NewApiKey } from '../../src/services/ApiKeyStore.js';
 import { hashApiKey } from '../../src/middleware/apiKeyAuth.js';
 import { formatUsd, parseUsd } from '../../src/services/money.js';
 import type { NonceStoreLike } from '../../src/services/NonceStore.js';
-import type { NewTask, TaskPatch, TaskRow, TaskStatus, TaskStoreLike } from '../../src/services/TaskStore.js';
+import type { NewTask, TaskPatch, TaskQuery, TaskRow, TaskStatus, TaskStoreLike } from '../../src/services/TaskStore.js';
 
 export class MemoryApiKeys implements ApiKeyStoreLike {
   rows = new Map<string, ApiKeyRow>();
@@ -33,6 +33,22 @@ export class MemoryApiKeys implements ApiKeyStoreLike {
   }
   async findByHash(keyHash: string) {
     return [...this.rows.values()].find((r) => r.keyHash === keyHash);
+  }
+  async create(key: NewApiKey) {
+    const now = new Date();
+    const row: ApiKeyRow = { id: randomUUID(), spentUsd: '0.000000', lastUsedAt: null, revokedAt: null, createdAt: now, updatedAt: now, ...key };
+    this.rows.set(row.id, row);
+    return row;
+  }
+  async listByDeveloper(developerId: string) {
+    return [...this.rows.values()].filter((r) => r.developerId === developerId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+  async revoke(developerId: string, id: string, at: Date) {
+    const r = this.rows.get(id);
+    if (!r || r.developerId !== developerId) return undefined;
+    const next = { ...r, revokedAt: r.revokedAt ?? at };
+    this.rows.set(id, next);
+    return next;
   }
   async touch(id: string, at: Date) {
     this.touches++;
@@ -91,6 +107,12 @@ export class MemoryTasks implements TaskStoreLike {
     const next = { ...r, ...patch, status: to, updatedAt: new Date() } as TaskRow;
     this.rows.set(id, next);
     return next;
+  }
+  async listByDeveloper(developerId: string, q: TaskQuery) {
+    return [...this.rows.values()]
+      .filter((r) => r.developerId === developerId && (!q.listingId || r.listingId === q.listingId) && (!q.direction || r.direction === q.direction))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(q.offset, q.offset + q.limit);
   }
   async setPayment(id: string, patch: Pick<TaskPatch, 'paymentTxn' | 'paymentUsd'>) {
     const r = this.rows.get(id);

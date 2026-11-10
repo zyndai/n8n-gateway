@@ -6,6 +6,7 @@ import { A2AHandler } from './A2AHandler.js';
 import { AgentCardService } from './AgentCard.js';
 import { AgentCaller } from './AgentCaller.js';
 import { AgentDnsClient } from './AgentDnsClient.js';
+import { ApiKeyService } from './ApiKeyService.js';
 import { ApiKeyStore } from './ApiKeyStore.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
 import { IdentityService } from './IdentityService.js';
@@ -14,6 +15,7 @@ import { ListingStore } from './ListingStore.js';
 import { NonceStore } from './NonceStore.js';
 import { PaymentProcessor } from './PaymentProcessor.js';
 import { TaskStore } from './TaskStore.js';
+import { WalletService } from './WalletService.js';
 import { WebhookForwarder } from './WebhookForwarder.js';
 import { parseMasterKey } from './keyVault.js';
 
@@ -25,6 +27,8 @@ export interface Services {
   listings: ListingService;
   agentDns: AgentDnsClient;
   apiKeys: ApiKeyStore;
+  apiKeySvc: ApiKeyService;
+  wallet: WalletService;
   tasks: TaskStore;
   nonces: NonceStore;
   payments: PaymentProcessor;
@@ -82,7 +86,9 @@ export function getServices(): Services {
     registryUrl: config.agentDnsUrl,
     defaultPriceUsd: config.x402.inboundPriceUsd,
   });
-  services = { config, store, identity, heartbeats, listings, agentDns, apiKeys, tasks, nonces, payments, a2a, caller, cards };
+  const apiKeySvc = new ApiKeyService({ store: apiKeys, developerExists: (id) => store.developerExists(id) });
+  const wallet = new WalletService({ store, identity, payments });
+  services = { config, store, identity, heartbeats, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, a2a, caller, cards };
   return services;
 }
 

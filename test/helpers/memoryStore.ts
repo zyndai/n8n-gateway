@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DeveloperKeyRecord } from '../../src/services/IdentityService.js';
 import type { HeartbeatPatch } from '../../src/services/HeartbeatManager.js';
-import type { HeartbeatRow, ListingRow, ListingStoreLike, NewListing } from '../../src/services/ListingStore.js';
+import type { HeartbeatRow, ListingPatch, ListingRow, ListingStoreLike, NewListing } from '../../src/services/ListingStore.js';
 import { REGISTERING_STALE_MS, allowedFrom, type ListingStatus } from '../../src/services/listingState.js';
 
 export class MemoryStore implements ListingStoreLike {
@@ -89,6 +89,20 @@ export class MemoryStore implements ListingStoreLike {
     const next = { ...l, priceUsd, updatedAt: new Date() };
     this.listings.set(listingId, next);
     return next;
+  }
+  async update(developerId: string, listingId: string, patch: ListingPatch) {
+    const l = this.listings.get(listingId);
+    if (!l || l.developerId !== developerId) return undefined;
+    const next = { ...l, ...patch, updatedAt: new Date() };
+    this.listings.set(listingId, next);
+    return next;
+  }
+  async remove(developerId: string, listingId: string) {
+    const l = this.listings.get(listingId);
+    if (!l || l.developerId !== developerId) return undefined;
+    this.listings.delete(listingId);
+    this.heartbeats.delete(listingId);
+    return l;
   }
   async findByWebhookUrl(developerId: string, url: string) {
     return [...this.listings.values()].filter((l) => l.developerId === developerId && l.webhookUrl === url);

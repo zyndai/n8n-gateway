@@ -7,7 +7,7 @@ import { assertWebhookUrl } from './webhookUrl.js';
 import { AgentDnsClient, AgentDnsError, toGatewayError, type RegisterEntityBody } from './AgentDnsClient.js';
 import type { HeartbeatManager } from './HeartbeatManager.js';
 import { entityIdFor, publicKeyString, type IdentityService } from './IdentityService.js';
-import type { HeartbeatRow, ListingRow, ListingStoreLike, NewListing } from './ListingStore.js';
+import type { HeartbeatRow, ListingPatch, ListingRow, ListingStoreLike, NewListing } from './ListingStore.js';
 
 export interface ListingView {
   id: string;
@@ -26,6 +26,11 @@ export interface ListingView {
   createdAt: Date;
   updatedAt: Date;
   heartbeat: { status: HeartbeatRow['status']; lastBeatAt: Date | null; failCount: number } | null;
+}
+
+export interface ListingUpdate extends ListingPatch {
+  /** Decimal USD per inbound call; null resets to the Gateway default (G17). */
+  priceUsd?: string | null;
 }
 
 export interface ListingServiceDeps {
@@ -65,6 +70,32 @@ export class ListingService {
     const row = await this.deps.store.setPrice(developerId, listingId, priceUsd);
     if (!row) throw new ApiError('NOT_FOUND', 'Listing not found');
     return this.get(developerId, listingId);
+  }
+
+  /**
+   * M4.1: edit name, summary, tags, workflow id and price. The Gateway's record and the signed
+   * agent card change at once; the AgentDNS copy keeps the values it was registered with
+   * (the registry client has no update call yet).
+   */
+  async update(developerId: string, listingId: string, patch: ListingUpdate): Promise<ListingView> {
+    if (patch.priceUsd !== undefined && patch.priceUsd !== null) parseUsd(patch.priceUsd, 'priceUsd');
+    await this.owned(developerId, listingId);
+    const { priceUsd, ...fields } = patch;
+    const defined = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) as ListingPatch;
+    if (Object.keys(defined).length > 0) {
+      if (!(await this.deps.store.update(developerId, listingId, defined))) throw new ApiError('NOT_FOUND', 'Listing not found');
+    }
+    if (priceUsd !== undefined) await this.deps.store.setPrice(developerId, listingId, priceUsd);
+    return this.get(developerId, listingId);
+  }
+
+  /** M4.1: stop the heartbeat, forget the keypair and delete the listing. Its tasks stay as history. */
+  async remove(developerId: string, listingId: string): Promise<{ id: string; deleted: true }> {
+    const { listing } = await this.owned(developerId, listingId);
+    if (listing.entityId) await this.deps.heartbeats.stop(listing.entityId);
+    this.deps.identity.invalidate(listing.id);
+    if (!(await this.deps.store.remove(developerId, listingId))) throw new ApiError('NOT_FOUND', 'Listing not found');
+    return { id: listingId, deleted: true };
   }
 
   async list(developerId: string): Promise<ListingView[]> {
