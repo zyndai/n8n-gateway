@@ -29,6 +29,13 @@
       "when": 1794327535701,
       "tag": "0003_task_payment_proof",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794333571333,
+      "tag": "0004_agent_wallet",
+      "breakpoints": true
     }
   ]
 }

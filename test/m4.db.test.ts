@@ -5,9 +5,10 @@ import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { disconnectDb, getDb } from '../src/db/client.js';
 import { developerKey } from '../src/db/dashboard.js';
-import { n8nApiKey, n8nDerivationCounter, n8nHeartbeat, n8nListing, n8nTask } from '../src/db/schema.js';
+import { n8nAgentWallet, n8nApiKey, n8nDerivationCounter, n8nHeartbeat, n8nListing, n8nTask } from '../src/db/schema.js';
 import { hashApiKey } from '../src/middleware/apiKeyAuth.js';
 import { ApiKeyService } from '../src/services/ApiKeyService.js';
+import { AgentWalletStore } from '../src/services/AgentWalletStore.js';
 import { ApiKeyStore } from '../src/services/ApiKeyStore.js';
 import { ListingStore } from '../src/services/ListingStore.js';
 import { TaskStore } from '../src/services/TaskStore.js';
@@ -36,6 +37,7 @@ describe.skipIf(!url)('M4 on Postgres', () => {
   afterAll(async () => {
     const db = getDb();
     await db.delete(n8nTask).where(inArray(n8nTask.developerId, [A, B]));
+    await db.delete(n8nAgentWallet).where(inArray(n8nAgentWallet.developerId, [A, B]));
     await db.delete(n8nApiKey).where(inArray(n8nApiKey.developerId, [A, B]));
     await db.delete(n8nListing).where(inArray(n8nListing.developerId, [A, B]));
     
@@ -143,5 +145,21 @@ describe.skipIf(!url)('M4 on Postgres', () => {
     expect(rows[0]).toMatchObject({ calls: 1, completed: 1, failed: 0, revenueUsd: '0.010000' });
     expect(await tasks.analytics(B, { since: new Date(0) })).toEqual([]);
     expect(await tasks.analytics(A, { since: new Date(Date.now() - 86_400_000), listingId: 'nope' })).toEqual([]);
+  });
+
+  it('stores one wallet per listing, keeps the first of two racing writes, and survives the listing being deleted', async () => {
+    const wallets = new AgentWalletStore(getDb());
+    const l = await listings.createListing(A, input);
+    const address = `0x${randomUUID().replace(/-/g, '').padEnd(40, '0')}`;
+    const w = { listingId: l.id, developerId: A, derivedKeyIndex: l.derivedKeyIndex, address, privateKeyEnc: 'enc-1' };
+    const [x, y] = await Promise.all([wallets.put(w), wallets.put({ ...w, privateKeyEnc: 'enc-2' })]);
+    expect(x.id).toBe(y.id);
+    expect((await wallets.getByListingIds([l.id])).get(l.id)).toMatchObject({ address, developerId: A });
+    expect(await wallets.getByListingIds([])).toEqual(new Map());
+
+    await listings.remove(A, l.id);
+    // ON DELETE SET NULL: the key outlives the listing, detached from it.
+    const [kept] = await getDb().select().from(n8nAgentWallet).where(eq(n8nAgentWallet.address, address));
+    expect(kept).toMatchObject({ listingId: null, privateKeyEnc: x.privateKeyEnc });
   });
 });

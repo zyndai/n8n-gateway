@@ -1,0 +1,115 @@
+# Everything in one go:  docker compose up --build
+#   postgres  - shared database (Gateway tables + n8n's own data in a separate database)
+#   migrate   - applies the Gateway migrations, then exits
+#   gateway   - the Zynd n8n Gateway          http://localhost:8080/health
+#   n8n       - n8n with n8n-nodes-zynd built in   http://localhost:5678
+# Set the secrets in .env first (see .env.example); compose reads it for the ${...} values below.
+
+name: zynd-n8n
+
+x-gateway-env: &gateway-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-zynd}:${POSTGRES_PASSWORD:-zynd}@postgres:5432/${POSTGRES_DB:-zynd}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zynd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zynd}
+      POSTGRES_DB: ${POSTGRES_DB:-zynd}
+      N8N_DB: ${N8N_DB:-n8n}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # First boot only: creates the dashboard-owned developer_keys table the Gateway tables reference
+      # (a standalone stand-in; with the real dashboard's database, drop this line) and n8n's database.
+      - ./test/fixtures/dashboard-developer-keys.sql:/docker-entrypoint-initdb.d/10-dashboard-developer-keys.sql:ro
+      - ./scripts/docker/create-n8n-db.sh:/docker-entrypoint-initdb.d/20-create-n8n-db.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      target: migrate
+    environment:
+      <<: *gateway-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  gateway:
+    build:
+      context: .
+      target: gateway
+    restart: unless-stopped
+    ports:
+      - '${PORT:-8080}:8080'
+    environment:
+      <<: *gateway-env
+      PORT: 8080
+      AGENTDNS_URL: ${AGENTDNS_URL:-https://zns01.zynd.ai}
+      # entity_url is {PUBLIC_URL}/a/{entityId}: must be reachable by other agents.
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      SESSION_JWT_SECRET: ${SESSION_JWT_SECRET:?set SESSION_JWT_SECRET in .env (openssl rand -hex 32)}
+      PKI_ENCRYPTION_KEY: ${PKI_ENCRYPTION_KEY:?set PKI_ENCRYPTION_KEY in .env (64 hex chars)}
+      HEARTBEAT_REQUIRES_WEBHOOK: ${HEARTBEAT_REQUIRES_WEBHOOK:-true}
+      X402_FACILITATOR_URL: ${X402_FACILITATOR_URL:-https://x402.org/facilitator}
+      X402_NETWORK: ${X402_NETWORK:-eip155:84532}
+      X402_ASSET: ${X402_ASSET:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}
+      X402_ASSET_NAME: ${X402_ASSET_NAME:-USDC}
+      X402_ASSET_VERSION: ${X402_ASSET_VERSION:-2}
+      X402_ASSET_DECIMALS: ${X402_ASSET_DECIMALS:-6}
+      X402_RPC_URL: ${X402_RPC_URL:-}
+      X402_INBOUND_PRICE_USD: ${X402_INBOUND_PRICE_USD:-}
+      X402_DEFAULT_MAX_PAYMENT_USD: ${X402_DEFAULT_MAX_PAYMENT_USD:-0.10}
+      # n8n webhooks live on the compose network (http://n8n:5678), a private address.
+      WEBHOOK_ALLOW_PRIVATE: ${WEBHOOK_ALLOW_PRIVATE:-true}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-60}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      INSTANCE_ID: ${INSTANCE_ID:-gw-0}
+      CLUSTER_PEERS: ${CLUSTER_PEERS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  n8n:
+    build:
+      context: .
+      target: n8n
+    restart: unless-stopped
+    ports:
+      - '${N8N_PORT:-5678}:5678'
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_DB:-n8n}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-zynd}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-zynd}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      # Optional but recommended: keeps stored credentials decryptable if the volume is recreated.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  n8n_data:

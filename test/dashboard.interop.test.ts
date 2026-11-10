@@ -18,7 +18,7 @@ import { WalletService } from '../src/services/WalletService.js';
 import { encryptSecret, parseMasterKey } from '../src/services/keyVault.js';
 import { FakeAgentDns } from './helpers/fakeAgentDns.js';
 import { MemoryStore } from './helpers/memoryStore.js';
-import { MemoryApiKeys, MemoryTasks } from './helpers/memoryStores.js';
+import { FakeBalances, MemoryAgentWallets, MemoryApiKeys, MemoryTasks } from './helpers/memoryStores.js';
 
 const lib = resolve(__dirname, '../../dashboard/src/lib/n8n');
 const present = existsSync(`${lib}/gateway.ts`);
@@ -71,7 +71,7 @@ describe.skipIf(!present)('dashboard client against the Gateway (M4.3, M4.11)', 
       dashboard: {
         apiKeys: () => new ApiKeyService({ store: keys, developerExists: (id) => store.developerExists(id) }),
         tasks: () => new MemoryTasks(),
-        wallet: () => new WalletService({ store, identity, payments: new PaymentProcessor({ config: loadConfig({}).x402 }) }),
+        wallet: () => new WalletService({ store, wallets: new MemoryAgentWallets(), identity, payments: new PaymentProcessor({ config: loadConfig({}).x402 }), masterKey, balances: new FakeBalances() }),
       },
       n8n: { apiKeys: () => keys, listings: () => listings, agentDns: () => new AgentDnsClient(dns.url) },
     });

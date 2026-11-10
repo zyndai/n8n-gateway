@@ -44,6 +44,8 @@ export interface ListingServiceDeps {
   /** Encrypts webhook secrets at rest (G1). Required for webhook binding and forwarding. */
   masterKey?: Buffer;
   allowPrivateWebhooks?: boolean;
+  /** Runs right after a listing is created: stores the agent's wallet. Best effort; the wallet view repairs a miss. */
+  onCreated?: (listing: ListingRow) => Promise<unknown>;
   log?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -61,7 +63,15 @@ export class ListingService {
   async create(developerId: string, input: NewListing): Promise<ListingView> {
     if (input.priceUsd !== undefined) parseUsd(input.priceUsd, 'priceUsd');
     if (!(await this.deps.store.developerExists(developerId))) throw new ApiError('NOT_FOUND', 'Developer not found');
-    return this.view(await this.deps.store.createListing(developerId, input), null);
+    const row = await this.deps.store.createListing(developerId, input);
+    if (this.deps.onCreated) {
+      try {
+        await this.deps.onCreated(row);
+      } catch (e) {
+        this.log.warn(`agent wallet for listing ${row.id} not stored yet: ${(e as Error).message}`);
+      }
+    }
+    return this.view(row, null);
   }
 
   /** G17: set the listing's own price per inbound call ("0" = free), or null to use the Gateway default. */

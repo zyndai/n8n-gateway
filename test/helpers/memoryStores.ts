@@ -1,6 +1,8 @@
 // In-memory twins of ApiKeyStore / TaskStore / NonceStore with the same atomic semantics
 // (single-threaded JS makes each method one atomic step, like the single SQL statement it mirrors).
 import { randomUUID } from 'node:crypto';
+import type { AgentWalletRow, AgentWalletStoreLike, NewAgentWallet } from '../../src/services/AgentWalletStore.js';
+import type { BalanceReaderLike } from '../../src/services/BalanceReader.js';
 import type { ApiKeyRow, ApiKeyStoreLike, NewApiKey } from '../../src/services/ApiKeyStore.js';
 import { hashApiKey } from '../../src/middleware/apiKeyAuth.js';
 import { formatUsd, parseUsd } from '../../src/services/money.js';
@@ -192,5 +194,32 @@ export class MemoryNonces implements NonceStoreLike {
       }
     }
     return n;
+  }
+}
+
+/** In-memory twin of AgentWalletStore: unique on listing, on developer + index, and on address. */
+export class MemoryAgentWallets implements AgentWalletStoreLike {
+  rows: AgentWalletRow[] = [];
+
+  async getByListingIds(ids: string[]) {
+    return new Map(this.rows.flatMap((r) => (r.listingId && ids.includes(r.listingId) ? [[r.listingId, r] as const] : [])));
+  }
+
+  async put(w: NewAgentWallet): Promise<AgentWalletRow> {
+    const clash = this.rows.find(
+      (r) => r.address === w.address || (w.listingId !== null && r.listingId === w.listingId) || (r.developerId === w.developerId && r.derivedKeyIndex === w.derivedKeyIndex),
+    );
+    if (clash) return clash;
+    const row: AgentWalletRow = { id: randomUUID(), createdAt: new Date(), ...w };
+    this.rows.push(row);
+    return row;
+  }
+}
+
+/** Fixed balances by address; anything not listed reads as unavailable. */
+export class FakeBalances implements BalanceReaderLike {
+  constructor(public byAddress: Record<string, string> = {}) {}
+  async balances(addresses: string[]) {
+    return new Map(addresses.map((a) => [a, this.byAddress[a] ?? null] as const));
   }
 }

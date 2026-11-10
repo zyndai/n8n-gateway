@@ -200,7 +200,7 @@ The dashboard's `/api/n8n/*` routes (Vercel) call the Gateway server to server a
 | DELETE | `/internal/v1/api-keys/:id` | Revoke (sets `revokedAt`, keeps the first timestamp). The key fails on its next request |
 | GET | `/internal/v1/tasks?listingId&direction&limit&offset` | `{ tasks }`, newest first, `limit` 1-100. Metadata only (status, counterparty, payment, error, timestamps); never `input` or `output` |
 | GET | `/internal/v1/analytics?days&listingId` | M6.2. `days` 1-365 (default 30), whole UTC days including today. `{ days, since, series, totals }`: `series` is one row per listing per day (`day`, `listingId`, `calls`, `completed`, `failed`, `revenueUsd`), `totals` one row per listing with `errorRate` = failed / (completed + failed), `null` before anything finished. Inbound calls only; `failed` = FAILED + TIMEOUT; revenue = settled payments of COMPLETED calls |
-| GET | `/internal/v1/wallet` | `{ payer, listings: [{ listingId, name, address }] }`: the EVM address that pays for outbound calls and each listing's receiving address. Public addresses only |
+| GET | `/internal/v1/wallet` | `{ payer, payerBalanceUsd, listings: [{ listingId, name, address, balanceUsd }] }`: the EVM address that pays for outbound calls and each listing's own wallet (G21), with USD balances read from the payment token (`null` when the chain cannot be read). Public addresses only |
 
 Another developer's listing answers `404 NOT_FOUND`, never 403, so ids cannot be probed. `webhookSecretEnc` is never returned. A registry failure answers `502 GATEWAY_UNAVAILABLE` with `details.agentDnsStatus` and leaves the listing in ERROR; calling `activate` again retries. The dashboard never reads the `n8n_*` tables itself; it goes through these routes (G12).
 

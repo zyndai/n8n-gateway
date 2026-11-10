@@ -192,3 +192,30 @@ export const n8nNonce = pgTable(
   },
   (t) => [index('n8n_nonce_expiresAt_idx').on(t.expiresAt)],
 );
+
+// Agent wallets: one EVM wallet per listing, created with the listing. The Gateway owns the private
+// key (AES-256-GCM under PKI_ENCRYPTION_KEY, the same vault as every other secret); `address` is a
+// plain copy so the dashboard can read it straight from this table without the master key. The key
+// is the one the payment path already derives from the listing seed, so payTo and the agent card
+// keep the same address. ON DELETE SET NULL: deleting a listing never destroys a key that may still
+// hold funds (G21).
+export const n8nAgentWallet = pgTable(
+  'n8n_agent_wallet',
+  {
+    id: id(),
+    listingId: text('listingId').references(() => n8nListing.id, { onDelete: 'set null' }),
+    developerId: text('developerId')
+      .notNull()
+      .references(() => developerKey.developerId),
+    derivedKeyIndex: integer('derivedKeyIndex').notNull(),
+    address: text('address').notNull(), // EIP-55
+    privateKeyEnc: text('privateKeyEnc').notNull(), // base64(iv || tag || ciphertext) of the 0x-hex secp256k1 key
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('n8n_agent_wallet_listingId_key').on(t.listingId),
+    uniqueIndex('n8n_agent_wallet_developerId_derivedKeyIndex_key').on(t.developerId, t.derivedKeyIndex),
+    uniqueIndex('n8n_agent_wallet_address_key').on(t.address),
+    index('n8n_agent_wallet_developerId_idx').on(t.developerId),
+  ],
+);

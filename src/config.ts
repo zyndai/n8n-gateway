@@ -54,6 +54,8 @@ export interface X402Config {
    * Unset (default): payment is optional and is verified only when a proof is present (LLD step 3).
    */
   inboundPriceUsd: string | undefined;
+  /** JSON-RPC endpoint used to read wallet balances. Defaults to the public node of the network, when known. */
+  rpcUrl: string | undefined;
   /** Ceiling for one outbound payment when the caller passes no `maxPaymentUsd`. */
   defaultMaxPaymentUsd: string;
 }
@@ -79,7 +81,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port,
     nodeEnv: env.NODE_ENV ?? 'development',
     databaseUrl: env.DATABASE_URL,
-    agentDnsUrl: (env.AGENTDNS_URL ?? 'https://dns01.zynd.ai').replace(/\/+$/, ''),
+    agentDnsUrl: (env.AGENTDNS_URL ?? 'https://zns01.zynd.ai').replace(/\/+$/, ''),
     publicUrl: (env.PUBLIC_URL ?? 'https://gw.zynd.ai').replace(/\/+$/, ''),
     pkiEncryptionKey: env.PKI_ENCRYPTION_KEY,
     sessionJwtSecret: env.SESSION_JWT_SECRET,
@@ -105,6 +107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       assetVersion: env.X402_ASSET_VERSION ?? '2',
       assetDecimals: Number(env.X402_ASSET_DECIMALS ?? 6),
       inboundPriceUsd: env.X402_INBOUND_PRICE_USD || undefined,
+      rpcUrl: (env.X402_RPC_URL || undefined)?.replace(/\/+$/, ''),
       defaultMaxPaymentUsd: env.X402_DEFAULT_MAX_PAYMENT_USD ?? '0.10',
     },
   };

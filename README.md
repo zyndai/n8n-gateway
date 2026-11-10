@@ -14,6 +14,15 @@ npm run lint && npm run typecheck && npm test && npm run build
 npm start              # runs dist/index.mjs with a 96 MB heap cap
 ```
 
+### Docker Compose
+
+```
+cp .env.example .env   # set SESSION_JWT_SECRET (openssl rand -hex 32) and PKI_ENCRYPTION_KEY (openssl rand -hex 32)
+docker compose up --build
+```
+
+One command builds and runs everything from source: Postgres, a one-shot `migrate` job, the Gateway (`http://localhost:8080/health`) and n8n (`http://localhost:5678`). The `Dockerfile` compiles the Gateway bundle and the `n8n-nodes-zynd` package in one build stage, and the `n8n` image (official n8n, pinned by `N8N_VERSION`) gets the compiled package installed under `/opt/n8n-custom` (`N8N_CUSTOM_EXTENSIONS`), so the **Zynd** and **Zynd Trigger** nodes and the Zynd API credential are there on first start. In n8n, point the credential at `http://gateway:8080`. Postgres creates a stand-in `developer_keys` table and n8n's own database on first boot only (`test/fixtures/`, `scripts/docker/`); with the real dashboard database, drop that mount.
+
 This is an npm-workspaces monorepo: the Gateway is the root and the n8n package is `packages/n8n-nodes-zynd/` (one `npm install`, one lock-file). Root `lint`, `typecheck` and `test` cover the Gateway only; the package has its own:
 
 ```

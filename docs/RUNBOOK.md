@@ -15,6 +15,7 @@ Set in the process environment (`.env.example` lists every variable).
 | `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST` | optional | Default 300 and 60 per API key; `RATE_LIMIT_PER_MINUTE=0` turns the limit off |
 | `METRICS_TOKEN` | optional | Enables `GET /metrics` |
 | `INSTANCE_ID`, `CLUSTER_PEERS` | with 2+ instances | See Two instances. Unset = one instance that owns every heartbeat |
+| `X402_RPC_URL` | optional | JSON-RPC node for the wallet balances in the dashboard (G21). Defaults to the public Base / Base Sepolia node; an unreadable balance shows as a dash and never fails the page |
 | `X402_*` | for paid listings | Defaults point at Base Sepolia test USDC. Mainnet needs all of them set and a production facilitator (G18) |
 
 ## Start, stop

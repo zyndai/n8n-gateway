@@ -4,10 +4,12 @@ import { loadConfig, type Config } from '../config.js';
 import { getDb } from '../db/client.js';
 import { A2AHandler } from './A2AHandler.js';
 import { AgentCardService } from './AgentCard.js';
+import { AgentWalletStore } from './AgentWalletStore.js';
 import { AgentCaller } from './AgentCaller.js';
 import { AgentDnsClient } from './AgentDnsClient.js';
 import { ApiKeyService } from './ApiKeyService.js';
 import { ApiKeyStore } from './ApiKeyStore.js';
+import { UsdBalanceReader, defaultRpcUrl } from './BalanceReader.js';
 import { Cluster, parsePeers } from './Cluster.js';
 import { HeartbeatCoordinator } from './HeartbeatCoordinator.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
@@ -79,6 +81,17 @@ export function getServices(): Services {
     log: console,
   });
   coordinatorRef.current = coordinator;
+  const payments = new PaymentProcessor({ config: config.x402 });
+  const rpcUrl = config.x402.rpcUrl ?? defaultRpcUrl(config.x402.network);
+  if (!rpcUrl) console.warn(`No RPC endpoint for ${config.x402.network}: wallet balances stay empty until X402_RPC_URL is set`);
+  const wallet = new WalletService({
+    store,
+    wallets: new AgentWalletStore(db),
+    identity,
+    payments,
+    masterKey,
+    balances: new UsdBalanceReader({ rpcUrl, asset: config.x402.asset, decimals: config.x402.assetDecimals }),
+  });
   const listings = new ListingService({
     store,
     identity,
@@ -88,12 +101,12 @@ export function getServices(): Services {
     heartbeatRequiresWebhook: config.heartbeatRequiresWebhook,
     masterKey,
     allowPrivateWebhooks: config.allowPrivateWebhooks,
+    onCreated: (l) => wallet.ensureListingWallet(l),
   });
 
   const apiKeys = new ApiKeyStore(db);
   const tasks = new TaskStore(db);
   const nonces = new NonceStore(db);
-  const payments = new PaymentProcessor({ config: config.x402 });
   const vault = new PaymentProofVault(masterKey);
   const recovery = new PaymentRecovery({
     tasks,
@@ -121,7 +134,6 @@ export function getServices(): Services {
     defaultPriceUsd: config.x402.inboundPriceUsd,
   });
   const apiKeySvc = new ApiKeyService({ store: apiKeys, developerExists: (id) => store.developerExists(id) });
-  const wallet = new WalletService({ store, identity, payments });
   services = { config, store, identity, heartbeats, cluster, coordinator, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, recovery, a2a, caller, cards };
   return services;
 }

@@ -18,7 +18,7 @@
     "measure:memory": "tsx scripts/measure-m1-memory.ts",
     "measure:latency": "tsx scripts/measure-latency.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "tsx scripts/migrate.ts",
     "db:check": "drizzle-kit check",
     "build:nodes": "npm run build -w n8n-nodes-zynd",
     "test:nodes": "npm test -w n8n-nodes-zynd",

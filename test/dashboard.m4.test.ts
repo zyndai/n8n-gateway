@@ -8,11 +8,12 @@ import { IdentityService, keypairFromSeed, publicKeyString } from '../src/servic
 import { ListingService } from '../src/services/ListingService.js';
 import { PaymentProcessor } from '../src/services/PaymentProcessor.js';
 import { WalletService } from '../src/services/WalletService.js';
-import { encryptSecret, parseMasterKey } from '../src/services/keyVault.js';
+import { fromHex, privateKeyToAddress } from '../src/services/evm.js';
+import { decryptSecret, encryptSecret, parseMasterKey } from '../src/services/keyVault.js';
 import { FakeAgentDns } from './helpers/fakeAgentDns.js';
 import { TEST_SECRET, inMinutes, mintToken } from './helpers/jwt.js';
 import { MemoryStore } from './helpers/memoryStore.js';
-import { MemoryApiKeys, MemoryTasks } from './helpers/memoryStores.js';
+import { FakeBalances, MemoryAgentWallets, MemoryApiKeys, MemoryTasks } from './helpers/memoryStores.js';
 import { loadConfig } from '../src/config.js';
 
 const masterKey = parseMasterKey('ab'.repeat(32));
@@ -28,6 +29,8 @@ let dns: FakeAgentDns;
 let store: MemoryStore;
 let keys: MemoryApiKeys;
 let tasks: MemoryTasks;
+let wallets: MemoryAgentWallets;
+let balances: FakeBalances;
 let stopped: string[];
 
 beforeEach(async () => {
@@ -41,20 +44,24 @@ beforeEach(async () => {
   keys = new MemoryApiKeys();
   tasks = new MemoryTasks();
   stopped = [];
+  wallets = new MemoryAgentWallets();
+  balances = new FakeBalances();
   const identity = new IdentityService({ masterKey, keySource: store });
+  const payments = new PaymentProcessor({ config: loadConfig({}).x402 });
+  const walletService = new WalletService({ store, wallets, identity, payments, masterKey, balances });
   const listings = new ListingService({
     store, identity, agentDns: new AgentDnsClient(dns.url),
     heartbeats: { start: () => {}, stop: async (id) => void stopped.push(id) },
     publicUrl: 'https://gw.test', heartbeatRequiresWebhook: false, log: silent,
+    onCreated: (l) => walletService.ensureListingWallet(l),
   });
-  const payments = new PaymentProcessor({ config: loadConfig({}).x402 });
   app = createApp({
     config: { sessionJwtSecret: TEST_SECRET },
     listings: () => listings,
     dashboard: {
       apiKeys: () => new ApiKeyService({ store: keys, developerExists: (id) => store.developerExists(id) }),
       tasks: () => tasks,
-      wallet: () => new WalletService({ store, identity, payments }),
+      wallet: () => walletService,
     },
     n8n: { apiKeys: () => keys, listings: () => listings },
   });
@@ -226,6 +233,58 @@ describe('GET /internal/v1/wallet (M4.10)', () => {
     expect(res.body.listings).toHaveLength(2);
     expect(res.body.listings[0].address).not.toBe(res.body.listings[1].address);
     expect(JSON.stringify(res.body)).not.toMatch(/priv|seed|secret/i);
+  });
+
+  it('stores one encrypted wallet per listing when the listing is created', async () => {
+    const l = await create();
+    expect(wallets.rows).toHaveLength(1);
+    const row = wallets.rows[0]!;
+    expect(row).toMatchObject({ listingId: l.id, developerId: ALICE, derivedKeyIndex: 0 });
+    // The key is encrypted at rest and is the one the payment path derives from the listing seed.
+    const key = decryptSecret(row.privateKeyEnc, masterKey);
+    expect(key).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(row.privateKeyEnc).not.toContain(key.slice(2));
+    expect(privateKeyToAddress(fromHex(key))).toBe(row.address);
+    const payments = new PaymentProcessor({ config: loadConfig({}).x402 });
+    const identity = new IdentityService({ masterKey, keySource: store });
+    expect(row.address).toBe(payments.evmAddress(identity.deriveKeypair(devSeed, 0).privateKey));
+    // The wallet view serves that same address.
+    const view = await request(app).get('/internal/v1/wallet').set(bearer(ALICE));
+    expect(view.body.listings[0].address).toBe(row.address);
+    expect(wallets.rows).toHaveLength(1);
+  });
+
+  it('creates the wallet of a listing that predates the table, with the same address', async () => {
+    const l = await create();
+    wallets.rows = []; // as if the listing had been created before the migration
+    const res = await request(app).get('/internal/v1/wallet').set(bearer(ALICE));
+    expect(wallets.rows).toHaveLength(1);
+    expect(res.body.listings[0]).toMatchObject({ listingId: l.id, address: wallets.rows[0]!.address });
+  });
+
+  it('reports USD balances, and null when the chain cannot be read', async () => {
+    const l = await create();
+    const payer = (await request(app).get('/internal/v1/wallet').set(bearer(ALICE))).body.payer as string;
+    const address = wallets.rows[0]!.address;
+    expect((await request(app).get('/internal/v1/wallet').set(bearer(ALICE))).body).toMatchObject({ payerBalanceUsd: null, listings: [{ listingId: l.id, balanceUsd: null }] });
+    balances.byAddress = { [payer]: '2.500000', [address]: '0.120000' };
+    expect((await request(app).get('/internal/v1/wallet').set(bearer(ALICE))).body).toMatchObject({ payerBalanceUsd: '2.500000', listings: [{ balanceUsd: '0.120000' }] });
+  });
+
+  it('keeps the wallet of a deleted listing (it may still hold funds) but no longer lists it', async () => {
+    const l = await create();
+    const del = await request(app).delete(`/internal/v1/listings/${l.id}`).set(bearer(ALICE));
+    expect(del.status).toBe(200);
+    expect(wallets.rows).toHaveLength(1);
+    expect((await request(app).get('/internal/v1/wallet').set(bearer(ALICE))).body.listings).toEqual([]);
+  });
+
+  it('does not fail listing creation when the wallet cannot be stored', async () => {
+    wallets.put = async () => {
+      throw new Error('db down');
+    };
+    const res = await request(app).post('/internal/v1/listings').set(bearer(ALICE)).send(body);
+    expect(res.status).toBe(201);
   });
 });
 
