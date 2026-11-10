@@ -1,21 +1,28 @@
 // M2.21: the real zyndai-ts-sdk client against a Gateway listing over real HTTP: card discovery from
 // entity_url, x-zynd-auth signed by the SDK, the call, the result, and the 402 an unpaid caller gets.
 // The SDK is a sibling checkout (../zyndai-ts-sdk, built); without it these tests are skipped.
-import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DEV, devSeed, makeGateway, type Gateway } from './helpers/harness.js';
 
 const sdkEntry = resolve(import.meta.dirname, '../../zyndai-ts-sdk/dist/index.mjs');
 const hasSdk = existsSync(sdkEntry);
+// G19: SDK builds from before the payment support have no A2APayer; the paid-call tests need it.
+const sdkCanPay = hasSdk && readFileSync(sdkEntry, 'utf8').includes('A2APayer');
+const pySdk = resolve(import.meta.dirname, '../../zyndai-agent');
+const pyBin = resolve(pySdk, '.venv/bin/python');
+const pyCanPay = existsSync(pyBin) && existsSync(resolve(pySdk, 'zyndai_agent/a2a/payment_client.py'));
 
 interface Keypair {
   privateKeyBytes: Uint8Array;
   entityId: string;
 }
 interface Sdk {
-  A2AClient: new (o: { keypair: Keypair; entityId: string }) => {
+  A2AClient: new (o: { keypair: Keypair; entityId: string; payment?: true | { maxPaymentUsd?: number } }) => {
     ask(target: string, text: string, o?: { data?: Record<string, unknown>; timeoutMs?: number }): Promise<string>;
     sync(o: { url: string; text?: string; data?: Record<string, unknown>; timeoutMs?: number }): Promise<{ status: { state: string }; artifacts?: { parts: unknown[] }[] }>;
   };
@@ -88,5 +95,58 @@ describe.skipIf(!hasSdk)('zyndai-ts-sdk client against the Gateway (M2.21)', () 
     gw = await makeGateway({ listen: true });
     await gw.listings.deactivate(DEV, gw.listing.id);
     await expect(clientFor().ask(gw.listing.entityUrl as string, 'hi', { timeoutMs: 10_000 })).rejects.toThrow(/409|not active/i);
+  });
+});
+
+// G19: the SDK clients pay a 402. The Gateway's own verifier (recovers the EIP-712 signer, checks amount,
+// recipient and validity window) must accept what the SDKs sign, and the Gateway must charge exactly once.
+describe.skipIf(!sdkCanPay)('zyndai-ts-sdk client pays a paid listing (G19)', () => {
+  const paid = (g: Gateway) => g.n8n.respond = (_job, res) => void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ output: 'Sunny' }));
+
+  it('pays the 402, gets the result, and the facilitator is called once to verify and once to settle', async () => {
+    gw = await makeGateway({ listen: true, price: '0.05' });
+    paid(gw);
+    const keypair = sdk.generateKeypair();
+    const client = new sdk.A2AClient({ keypair, entityId: keypair.entityId, payment: { maxPaymentUsd: 0.1 } });
+
+    expect(await client.ask(gw.listing.entityUrl as string, 'hi', { timeoutMs: 10_000 })).toBe('Sunny');
+    expect(gw.fac.calls).toEqual(['verify', 'settle']);
+  });
+
+  it('refuses a price above its cap before signing anything', async () => {
+    gw = await makeGateway({ listen: true, price: '0.50' });
+    const keypair = sdk.generateKeypair();
+    const client = new sdk.A2AClient({ keypair, entityId: keypair.entityId, payment: true });
+
+    await expect(client.ask(gw.listing.entityUrl as string, 'hi', { timeoutMs: 10_000 })).rejects.toThrow(/Refusing to pay/);
+    expect(gw.fac.calls).toEqual([]);
+    expect(gw.jobs).toHaveLength(0);
+  });
+});
+
+describe.skipIf(!pyCanPay)('zyndai-python-sdk client pays a paid listing (G19)', () => {
+  const run = promisify(execFile);
+  const script = (url: string, cap: number) => `
+from zyndai_agent.a2a.client import A2AClient
+from zyndai_agent.a2a.payment_client import ClientPaymentOptions
+from zyndai_agent.ed25519_identity import generate_keypair
+kp = generate_keypair()
+c = A2AClient(kp, kp.entity_id, payment=ClientPaymentOptions(max_payment_usd=${cap}))
+print("REPLY:" + c.ask("${url}", "hi"))
+`;
+
+  it('pays the 402 and gets the result; the Gateway verifies and settles once', async () => {
+    gw = await makeGateway({ listen: true, price: '0.05' });
+    gw.n8n.respond = (_job, res) => void res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ output: 'Sunny' }));
+    const { stdout } = await run(pyBin, ['-c', script(gw.listing.entityUrl as string, 0.1)], { cwd: pySdk, timeout: 60_000 });
+    expect(stdout).toContain('REPLY:Sunny');
+    expect(gw.fac.calls).toEqual(['verify', 'settle']);
+  });
+
+  it('refuses a price above its cap before signing anything', async () => {
+    gw = await makeGateway({ listen: true, price: '0.50' });
+    await expect(run(pyBin, ['-c', script(gw.listing.entityUrl as string, 0.1)], { cwd: pySdk, timeout: 60_000 })).rejects.toThrow(/Refusing to pay/);
+    expect(gw.fac.calls).toEqual([]);
+    expect(gw.jobs).toHaveLength(0);
   });
 });
