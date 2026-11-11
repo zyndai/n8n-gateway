@@ -1,0 +1,16 @@
+{
+  "name": "procurement-desk-ui",
+  "private": true,
+  "description": "Source and local preview for the n8n Procurement Desk form pages (not part of the Gateway build)",
+  "type": "module",
+  "scripts": {
+    "setup": "npm install --no-package-lock && npx playwright install chromium && node -e \"require('fs').mkdirSync('.cache/n8n',{recursive:true})\" && npm pack n8n@2.47.0 --pack-destination .cache && tar -xzf .cache/n8n-2.47.0.tgz -C .cache/n8n package/templates",
+    "preview": "node preview/harness.mjs",
+    "ops": "node preview/build-ops.mjs"
+  },
+  "devDependencies": {
+    "handlebars": "4.7.10",
+    "playwright": "1.65.0",
+    "sanitize-html": "2.18.2"
+  }
+}

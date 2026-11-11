@@ -2,7 +2,8 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', 'src/db/migrations', 'packages/**'] },
+  // n8n/** holds n8n Code-node bodies (top-level return, $ globals) and a standalone preview tool.
+  { ignores: ['dist', 'node_modules', 'src/db/migrations', 'packages/**', 'n8n/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
