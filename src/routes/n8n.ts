@@ -14,6 +14,7 @@ import type {
 } from '../n8nContract.js';
 import type { A2AHandler } from '../services/A2AHandler.js';
 import type { AgentCaller } from '../services/AgentCaller.js';
+import type { AirnodeClient } from '../services/AirnodeClient.js';
 import type { AgentDnsClient } from '../services/AgentDnsClient.js';
 import { toGatewayError } from '../services/AgentDnsClient.js';
 import type { ApiKeyStoreLike } from '../services/ApiKeyStore.js';
@@ -25,6 +26,8 @@ export interface N8nDeps {
   agentDns: () => Pick<AgentDnsClient, 'search'>;
   listings: () => ListingService;
   caller: () => AgentCaller;
+  /** AirnodeHub calls (Zynd x AirnodeHub showcase). Optional so older test harnesses still build. */
+  airnode?: () => AirnodeClient;
   a2a: () => A2AHandler;
   /** M5.2: per-key limiter; omitted = unlimited. */
   rateLimiter?: () => RateLimiter | undefined;
@@ -88,7 +91,7 @@ export function createN8nRouter(deps: N8nDeps): Router {
   router.post('/agents/:id/tasks', requirePermission('call'), async (req, res) => {
     const body = obj(req.body);
     if (!('input' in body)) throw new ApiError('BAD_REQUEST', 'input is required');
-    res.json(await deps.caller().call(apiKeyOf(req), param(req, 'id'), { input: body.input, maxPaymentUsd: body.maxPaymentUsd as string | number | undefined }));
+    res.json(await deps.caller().call(apiKeyOf(req), param(req, 'id'), { input: body.input, maxPaymentUsd: body.maxPaymentUsd as string | number | undefined, payFromListingId: body.payFromListingId }));
   });
 
   // M2.15
@@ -133,6 +136,31 @@ export function createN8nRouter(deps: N8nDeps): Router {
     const view = await deps.listings().unbindWebhook(developerOf(req), param(req, 'id'));
     const out: UnbindWebhookResponse = { id: view.id, deleted: true };
     res.json(out);
+  });
+
+  // AirnodeHub: the Gateway pays the Airnode's 402 and verifies the signed answer.
+  const airnode = (): AirnodeClient => {
+    const a = deps.airnode?.();
+    if (!a) throw new ApiError('NOT_IMPLEMENTED', 'AirnodeHub calls are not enabled on this Gateway');
+    return a;
+  };
+
+  router.post('/airnode/call', requirePermission('call'), async (req, res) => {
+    const body = obj(req.body);
+    res.json(
+      await airnode().call(apiKeyOf(req), {
+        listingUrl: body.listingUrl,
+        operation: body.operation,
+        parameters: body.parameters,
+        maxPaymentUsd: body.maxPaymentUsd,
+        payFromListingId: body.payFromListingId,
+      }),
+    );
+  });
+
+  router.post('/airnode/verify', requirePermission('search'), async (req, res) => {
+    const body = obj(req.body);
+    res.json(await airnode().verify({ listingUrl: body.listingUrl, operation: body.operation, parameters: body.parameters, attestation: body.attestation }));
   });
 
   return router;

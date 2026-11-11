@@ -1,3 +1,5 @@
+import { DEFAULT_AIRNODE_CONFIG, type AirnodeConfig } from './services/AirnodeClient.js';
+
 export interface Config {
   port: number;
   nodeEnv: string;
@@ -23,6 +25,8 @@ export interface Config {
   /** M5.3: this instance's place in a multi-instance deployment. */
   cluster: ClusterConfig;
   x402: X402Config;
+  /** AirnodeHub calls made for n8n workflows (`/n8n/v1/airnode/*`). */
+  airnode: AirnodeConfig;
 }
 
 export interface ClusterConfig {
@@ -109,6 +113,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       inboundPriceUsd: env.X402_INBOUND_PRICE_USD || undefined,
       rpcUrl: (env.X402_RPC_URL || undefined)?.replace(/\/+$/, ''),
       defaultMaxPaymentUsd: env.X402_DEFAULT_MAX_PAYMENT_USD ?? '0.10',
+    },
+    airnode: {
+      ...DEFAULT_AIRNODE_CONFIG,
+      ...(env.AIRNODE_HOST_PATTERN ? { hostPattern: new RegExp(env.AIRNODE_HOST_PATTERN) } : {}),
+      asset: env.AIRNODE_ASSET ?? DEFAULT_AIRNODE_CONFIG.asset,
+      network: env.AIRNODE_NETWORK ?? DEFAULT_AIRNODE_CONFIG.network,
+      assetDecimals: Number(env.AIRNODE_ASSET_DECIMALS ?? DEFAULT_AIRNODE_CONFIG.assetDecimals),
+      defaultMaxPaymentUsd: env.AIRNODE_DEFAULT_MAX_PAYMENT_USD ?? DEFAULT_AIRNODE_CONFIG.defaultMaxPaymentUsd,
     },
   };
 }

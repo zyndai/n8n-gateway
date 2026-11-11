@@ -4,6 +4,7 @@ import { loadConfig, type Config } from '../config.js';
 import { getDb } from '../db/client.js';
 import { A2AHandler } from './A2AHandler.js';
 import { AgentCardService } from './AgentCard.js';
+import { AirnodeClient } from './AirnodeClient.js';
 import { AgentWalletStore } from './AgentWalletStore.js';
 import { AgentCaller } from './AgentCaller.js';
 import { AgentDnsClient } from './AgentDnsClient.js';
@@ -43,6 +44,7 @@ export interface Services {
   a2a: A2AHandler;
   caller: AgentCaller;
   cards: AgentCardService;
+  airnode: AirnodeClient;
 }
 
 let services: Services | undefined;
@@ -124,7 +126,7 @@ export function getServices(): Services {
     inboundPriceUsd: config.x402.inboundPriceUsd,
     publicUrl: config.publicUrl,
   });
-  const caller = new AgentCaller({ agentDns, identity, payments, tasks, apiKeys, defaultMaxPaymentUsd: config.x402.defaultMaxPaymentUsd });
+  const caller = new AgentCaller({ agentDns, identity, store, payments, tasks, apiKeys, defaultMaxPaymentUsd: config.x402.defaultMaxPaymentUsd });
   const cards = new AgentCardService({
     listings,
     identity,
@@ -133,8 +135,9 @@ export function getServices(): Services {
     registryUrl: config.agentDnsUrl,
     defaultPriceUsd: config.x402.inboundPriceUsd,
   });
+  const airnode = new AirnodeClient({ config: config.airnode, identity, store, payments, apiKeys });
   const apiKeySvc = new ApiKeyService({ store: apiKeys, developerExists: (id) => store.developerExists(id) });
-  services = { config, store, identity, heartbeats, cluster, coordinator, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, recovery, a2a, caller, cards };
+  services = { config, store, identity, heartbeats, cluster, coordinator, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, recovery, a2a, caller, cards, airnode };
   return services;
 }
 

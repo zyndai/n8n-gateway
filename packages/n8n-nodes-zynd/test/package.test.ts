@@ -33,7 +33,7 @@ describe('package.json', () => {
 		for (const dist of [...pkg.n8n.credentials, ...pkg.n8n.nodes] as string[]) {
 			expect(existsSync(join(root, dist.replace(/^dist\//, '').replace(/\.js$/, '.ts'))), dist).toBe(true);
 		}
-		expect(pkg.n8n.nodes).toEqual(['dist/nodes/Zynd/Zynd.node.js', 'dist/nodes/Zynd/ZyndTrigger.node.js']);
+		expect(pkg.n8n.nodes).toEqual(['dist/nodes/Zynd/Zynd.node.js', 'dist/nodes/Zynd/ZyndAirnode.node.js', 'dist/nodes/Zynd/ZyndTrigger.node.js']);
 	});
 });
 

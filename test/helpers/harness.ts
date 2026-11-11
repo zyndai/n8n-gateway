@@ -10,6 +10,7 @@ import { A2AHandler } from '../../src/services/A2AHandler.js';
 import { AgentCardService } from '../../src/services/AgentCard.js';
 import { AgentCaller } from '../../src/services/AgentCaller.js';
 import { AgentDnsClient } from '../../src/services/AgentDnsClient.js';
+import { AirnodeClient, DEFAULT_AIRNODE_CONFIG } from '../../src/services/AirnodeClient.js';
 import { IdentityService, keypairFromSeed, publicKeyString, type Ed25519Keypair } from '../../src/services/IdentityService.js';
 import { ListingService, type ListingView } from '../../src/services/ListingService.js';
 import type { ListingStoreLike } from '../../src/services/ListingStore.js';
@@ -55,6 +56,8 @@ export interface HarnessOptions {
   /** Swap in the Postgres listing store (the developer key row must hold the harness seed). */
   listingStore?: ListingStoreLike;
   stores?: { tasks?: TaskStoreLike; apiKeys?: ApiKeyStoreLike; nonces?: NonceStoreLike };
+  /** Fake AirnodeHub: the fetch AirnodeClient uses. Unset = /n8n/v1/airnode/* answers 501. */
+  airnodeFetch?: typeof fetch;
 }
 
 export async function makeGateway(opts: HarnessOptions = {}) {
@@ -130,14 +133,15 @@ export async function makeGateway(opts: HarnessOptions = {}) {
     timeoutMs: opts.timeoutMs,
     pollIntervalMs: opts.pollIntervalMs,
   });
-  const caller = new AgentCaller({ agentDns, identity, payments, tasks, apiKeys, defaultMaxPaymentUsd: '0.10', pollIntervalMs: 20, timeoutMs: opts.callerTimeoutMs ?? 3000 });
+  const caller = new AgentCaller({ agentDns, identity, store, payments, tasks, apiKeys, defaultMaxPaymentUsd: '0.10', pollIntervalMs: 20, timeoutMs: opts.callerTimeoutMs ?? 3000 });
 
+  const airnode = opts.airnodeFetch ? new AirnodeClient({ config: DEFAULT_AIRNODE_CONFIG, identity, store, payments, apiKeys, fetch: opts.airnodeFetch }) : undefined;
   const limiter = opts.rateLimit ? new RateLimiter(opts.rateLimit) : undefined;
   const cards = new AgentCardService({ listings, identity, payments, publicUrl, registryUrl: dns.url, defaultPriceUsd: opts.price });
   const app = createApp({
     config: { sessionJwtSecret: 'x'.repeat(40) },
     listings: () => listings,
-    n8n: { apiKeys: () => apiKeys, agentDns: () => agentDns, listings: () => listings, caller: () => caller, a2a: () => a2a, rateLimiter: () => limiter },
+    n8n: { apiKeys: () => apiKeys, agentDns: () => agentDns, listings: () => listings, caller: () => caller, a2a: () => a2a, rateLimiter: () => limiter, ...(airnode ? { airnode: () => airnode } : {}) },
     a2a: { a2a: () => a2a, nonces: () => nonces },
     card: { cards: () => cards },
   });

@@ -167,3 +167,22 @@ describe('GET /n8n/v1/tasks/:id (M2.15)', () => {
     expect(API_KEY).toBeTruthy();
   });
 });
+
+describe('payFromListingId (Zynd x AirnodeHub showcase: an agent pays from its own wallet)', () => {
+  it('signs the payment with the listing wallet while x-zynd-auth stays the developer', async () => {
+    const { call } = await setup({ priceUsd: '0.05' });
+    const res = await call({ input: {}, maxPaymentUsd: '0.10', payFromListingId: gw.listing.id });
+    expect(res.status).toBe(200);
+    const row = gw.store.listings.get(gw.listing.id)!;
+    const agent = await gw.identity.getListingKeypair({ listingId: row.id, developerId: DEV, derivedKeyIndex: row.derivedKeyIndex });
+    expect(remote.payers.at(-1)).toBe(gw.payments.evmAddress(agent.privateKey));
+    expect(remote.requests.at(-1)).toMatchObject({ auth: true, paid: true });
+  });
+
+  it('refuses a listing that is not the caller’s, before calling anyone', async () => {
+    const { call } = await setup({ priceUsd: '0.05' });
+    const res = await call({ input: {}, payFromListingId: '00000000-0000-0000-0000-000000000000' });
+    expect(res.status).toBe(404);
+    expect(remote.requests).toHaveLength(0);
+  });
+});
