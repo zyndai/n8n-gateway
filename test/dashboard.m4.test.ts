@@ -82,6 +82,12 @@ describe('PATCH/DELETE /internal/v1/listings/:id (M4.1)', () => {
     expect(cleared.body).toMatchObject({ workflowId: null, priceUsd: null, name: 'Weather 2' });
   });
 
+  it('caps summary at the 200 characters AgentDNS accepts, on create and edit', async () => {
+    const l = await create();
+    expect((await request(app).patch(`/internal/v1/listings/${l.id}`).set(bearer(ALICE)).send({ summary: 'x'.repeat(200) })).status).toBe(200);
+    expect((await request(app).post('/internal/v1/listings').set(bearer(ALICE)).send({ ...body, summary: 'x'.repeat(201) })).status).toBe(400);
+  });
+
   it('still accepts a price-only patch (G17)', async () => {
     const l = await create();
     const res = await request(app).patch(`/internal/v1/listings/${l.id}`).set(bearer(ALICE)).send({ priceUsd: '0' });
@@ -90,7 +96,7 @@ describe('PATCH/DELETE /internal/v1/listings/:id (M4.1)', () => {
 
   it('validates the patch and changes nothing on a bad one', async () => {
     const l = await create();
-    for (const bad of [{}, [], { name: '' }, { name: 'x'.repeat(101) }, { tags: 'x' }, { priceUsd: '-1' }, { priceUsd: '0.1234567' }, { name: 'ok', priceUsd: 'free' }]) {
+    for (const bad of [{}, [], { name: '' }, { name: 'x'.repeat(101) }, { summary: 'x'.repeat(201) }, { tags: 'x' }, { priceUsd: '-1' }, { priceUsd: '0.1234567' }, { name: 'ok', priceUsd: 'free' }]) {
       const res = await request(app).patch(`/internal/v1/listings/${l.id}`).set(bearer(ALICE)).send(bad as object);
       expect(res.status, JSON.stringify(bad)).toBe(400);
     }
