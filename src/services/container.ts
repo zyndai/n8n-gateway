@@ -83,7 +83,9 @@ export function getServices(): Services {
     log: console,
   });
   coordinatorRef.current = coordinator;
-  const payments = new PaymentProcessor({ config: config.x402 });
+  // One logger for every payment line, so `docker logs` shows the whole story of a payment in order.
+  const payLog = console;
+  const payments = new PaymentProcessor({ config: config.x402, log: payLog });
   const rpcUrl = config.x402.rpcUrl ?? defaultRpcUrl(config.x402.network);
   if (!rpcUrl) console.warn(`No RPC endpoint for ${config.x402.network}: wallet balances stay empty until X402_RPC_URL is set`);
   const wallet = new WalletService({
@@ -114,7 +116,7 @@ export function getServices(): Services {
     tasks,
     payments,
     vault,
-    log: { info: (m) => console.log(m), error: (m, e) => console.error(m, e) },
+    log: payLog,
   });
   const a2a = new A2AHandler({
     listings,
@@ -125,8 +127,9 @@ export function getServices(): Services {
     forwarder: new WebhookForwarder(),
     inboundPriceUsd: config.x402.inboundPriceUsd,
     publicUrl: config.publicUrl,
+    log: payLog,
   });
-  const caller = new AgentCaller({ agentDns, identity, store, payments, tasks, apiKeys, defaultMaxPaymentUsd: config.x402.defaultMaxPaymentUsd });
+  const caller = new AgentCaller({ agentDns, identity, store, payments, tasks, apiKeys, defaultMaxPaymentUsd: config.x402.defaultMaxPaymentUsd, log: payLog });
   const cards = new AgentCardService({
     listings,
     identity,
@@ -135,7 +138,7 @@ export function getServices(): Services {
     registryUrl: config.agentDnsUrl,
     defaultPriceUsd: config.x402.inboundPriceUsd,
   });
-  const airnode = new AirnodeClient({ config: config.airnode, identity, store, payments, apiKeys });
+  const airnode = new AirnodeClient({ config: config.airnode, identity, store, payments, apiKeys, log: payLog });
   const apiKeySvc = new ApiKeyService({ store: apiKeys, developerExists: (id) => store.developerExists(id) });
   services = { config, store, identity, heartbeats, cluster, coordinator, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, recovery, a2a, caller, cards, airnode };
   return services;

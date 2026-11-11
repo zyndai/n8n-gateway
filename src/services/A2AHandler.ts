@@ -12,6 +12,7 @@ import type { ListingRow } from './ListingStore.js';
 import type { Ed25519Keypair } from './IdentityService.js';
 import type { PaymentProcessor, HeaderBag, PaymentRequirements, VerifiedPayment } from './PaymentProcessor.js';
 import { effectivePriceUsd, formatUsd } from './money.js';
+import { logPayment, usd, type PaymentLogger } from './paymentLog.js';
 import type { PaymentProofVault } from './PaymentRecovery.js';
 import { isOpen, type TaskRow, type TaskStoreLike } from './TaskStore.js';
 import { TaskWaiter } from './TaskWaiter.js';
@@ -53,6 +54,8 @@ export interface A2AHandlerDeps {
   publicUrl: string;
   pollIntervalMs?: number;
   timeoutMs?: number;
+  /** Payment log lines (one per event). Defaults to `console`. */
+  log?: PaymentLogger;
 }
 
 export interface SendResult {
@@ -112,9 +115,11 @@ export function toA2ATask(row: TaskRow): A2ATask {
 export class A2AHandler {
   readonly waiter: TaskWaiter;
   private readonly payTo = new Map<string, string>();
+  private readonly log: PaymentLogger;
 
   constructor(private readonly deps: A2AHandlerDeps) {
     this.waiter = deps.waiter ?? new TaskWaiter();
+    this.log = deps.log ?? console;
   }
 
   private get timeoutMs(): number {
@@ -162,7 +167,7 @@ export class A2AHandler {
       }
     } catch (err) {
       await this.deps.tasks.transition(task.id, ['PENDING', 'PROCESSING'], 'FAILED', { error: err instanceof ApiError ? err.message : 'Could not reach the workflow' });
-      if (verified) await this.drop(task.id, verified);
+      if (verified) await this.drop(task.id, listing.id, verified, 'workflow_unreachable', err);
       throw err;
     }
 
@@ -178,10 +183,10 @@ export class A2AHandler {
         if (mine) {
           let settled;
           try {
-            settled = await this.deps.payments.settle(verified);
+            settled = await this.deps.payments.settle(verified, { jobId: task.id, listingId: listing.id });
           } catch (err) {
             // The caller is told the payment failed, so it must not be charged later by a retry.
-            await this.drop(task.id, verified);
+            await this.drop(task.id, listing.id, verified, 'settle_failed', err);
             throw err;
           }
           if (this.deps.vault) await this.deps.tasks.finishPayment(task.id, settled.transaction);
@@ -190,7 +195,7 @@ export class A2AHandler {
           paymentResponse = Buffer.from(JSON.stringify({ success: true, transaction: settled.transaction, payer: settled.payer, network: verified.requirements.network }), 'utf8').toString('base64');
         }
       } else {
-        await this.drop(task.id, verified);
+        await this.drop(task.id, listing.id, verified, `job_${done.status.toLowerCase()}`);
       }
     }
     if (done.status === 'TIMEOUT') throw new ApiError('TASK_TIMEOUT');
@@ -228,7 +233,16 @@ export class A2AHandler {
   // --- internals -----------------------------------------------------------------------------
 
   /** The payment will not be taken: free the in-process nonce and forget the stored proof. */
-  private async drop(taskId: string, verified: VerifiedPayment): Promise<void> {
+  private async drop(taskId: string, listingId: string, verified: VerifiedPayment, why: string, cause?: unknown): Promise<void> {
+    // A proof dropped after a failed settle is revenue lost on a job that ran; the other reasons mean nobody was charged.
+    logPayment(this.log, why === 'settle_failed' ? 'warn' : 'info', 'payment proof dropped', {
+      reason: why,
+      cause: cause instanceof ApiError ? cause.code : undefined,
+      payer: verified.payer,
+      amountUsd: usd(verified.amountMicroUsd),
+      job: taskId,
+      listing: listingId,
+    });
     this.deps.payments.release(verified);
     if (this.deps.vault) await this.deps.tasks.clearProof(taskId);
   }
@@ -266,7 +280,7 @@ export class A2AHandler {
     const requirements = await this.requirementsFor(listing, price);
     const header = (error?: string): string => this.deps.payments.paymentRequiredHeader(requirements, `${this.deps.publicUrl}/a/${listing.entityId}`, error);
     try {
-      return await this.deps.payments.verifyX402(headers, requirements);
+      return await this.deps.payments.verifyX402(headers, requirements, { listingId: listing.id });
     } catch (err) {
       if (err instanceof ApiError && err.code === 'PAYMENT_FAILED') throw new PaymentRequiredError(err.message, header(err.message), err.details);
       throw err;

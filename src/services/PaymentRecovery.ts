@@ -13,6 +13,7 @@ import { SETTLE_LEASE_MS, TASK_TIMEOUT_MS } from './A2AHandler.js';
 import type { PaymentProcessor, VerifiedPayment } from './PaymentProcessor.js';
 import type { TaskRow, TaskStoreLike } from './TaskStore.js';
 import { decryptSecret, encryptSecret } from './keyVault.js';
+import { logPayment, usd, type PaymentLogger } from './paymentLog.js';
 
 /** Seals a `VerifiedPayment` for storage on the task row. */
 export class PaymentProofVault {
@@ -47,13 +48,17 @@ export interface PaymentRecoveryDeps {
   leaseMs?: number;
   taskTimeoutMs?: number;
   batch?: number;
-  log?: { info(msg: string): void; error(msg: string, err?: unknown): void };
+  /** Payment log lines (one per event). Defaults to `console`. */
+  log?: PaymentLogger;
 }
 
 export class PaymentRecovery {
   private running = false;
+  private readonly log: PaymentLogger;
 
-  constructor(private readonly deps: PaymentRecoveryDeps) {}
+  constructor(private readonly deps: PaymentRecoveryDeps) {
+    this.log = deps.log ?? console;
+  }
 
   /** One pass. Safe to call from several processes and from a timer; overlapping calls in one process are skipped. */
   async run(): Promise<RecoveryResult> {
@@ -69,10 +74,18 @@ export class PaymentRecovery {
           if (r) out[r]++;
         } catch (err) {
           out.failed++;
-          this.deps.log?.error(`payment recovery failed for task ${row.id}`, err);
+          // settle() already logged why the facilitator said no; this line says which task the sweep gave up on.
+          logPayment(this.log, 'error', 'payment recovery failed', {
+            job: row.id,
+            listing: row.listingId,
+            cause: err instanceof ApiError ? err.code : undefined,
+            reason: err instanceof ApiError ? err.message : (err as Error)?.message,
+          });
         }
       }
-      if (out.settled || out.released) this.deps.log?.info(`payment recovery: settled ${out.settled}, released ${out.released}`);
+      if (out.settled || out.released || out.failed) {
+        logPayment(this.log, out.failed ? 'warn' : 'info', 'payment recovery sweep', { settled: out.settled, released: out.released, failed: out.failed });
+      }
       return out;
     } finally {
       this.running = false;
@@ -103,11 +116,19 @@ export class PaymentRecovery {
     }
     const validBefore = Number(verified.paymentPayload.payload.authorization.validBefore) * 1000;
     if (validBefore <= now) {
+      // The job completed but the signed authorization ran out before we could settle it: the money is gone.
+      logPayment(this.log, 'warn', 'payment proof dropped', {
+        reason: 'authorization_expired',
+        payer: verified.payer,
+        amountUsd: usd(verified.amountMicroUsd),
+        job: row.id,
+        listing: row.listingId,
+      });
       await tasks.clearProof(row.id);
       return 'released';
     }
     try {
-      const settled = await this.deps.payments.settle(verified);
+      const settled = await this.deps.payments.settle(verified, { jobId: row.id, ...(row.listingId ? { listingId: row.listingId } : {}) });
       await tasks.finishPayment(row.id, settled.transaction);
       return 'settled';
     } catch (err) {
