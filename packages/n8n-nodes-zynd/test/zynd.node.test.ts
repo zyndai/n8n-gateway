@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { ZyndApi } from '../credentials/ZyndApi.credentials';
 import { Zynd } from '../nodes/Zynd/Zynd.node';
+import { ZyndAirnode } from '../nodes/Zynd/ZyndAirnode.node';
 import { makeCtx, type Handler } from './helpers';
 
 const exec = (params: Record<string, unknown>, handler: Handler, items?: Record<string, unknown>[]) => {
@@ -31,6 +32,11 @@ describe('Zynd node operations (M3.2)', () => {
 		const { out, ctx } = await exec({ operation: 'callAgent', agentId: 'zns:abc', inputType: 'text', inputText: 'hello', maxPaymentUsd: '0.05' }, ok(task));
 		expect(out[0]!.json).toEqual(task);
 		expect(ctx.requests[0]).toMatchObject({ method: 'POST', url: 'https://gw.test/n8n/v1/agents/zns%3Aabc/tasks', body: { input: 'hello', maxPaymentUsd: '0.05' }, timeout: 310_000 });
+	});
+
+	it('Call Agent: Pay From Listing Wallet sends the listing id', async () => {
+		const { ctx } = await exec({ operation: 'callAgent', agentId: 'zns:a', inputType: 'text', inputText: 'x', payFrom: 'listing', payFromListingId: ' lst-9 ' }, ok({ taskId: 't', status: 'COMPLETED', output: 1, error: null }));
+		expect(ctx.requests[0]!.body).toEqual({ input: 'x', payFromListingId: 'lst-9' });
 	});
 
 	it('Call Agent: JSON input is parsed, an empty cap is left out', async () => {
@@ -120,5 +126,52 @@ describe('ZyndApi credential (M3.1)', () => {
 		expect(field('apiUrl').default).toBe('https://gw.zynd.ai');
 		expect(field('apiKey').typeOptions).toEqual({ password: true });
 		expect(field('webhookSecret').typeOptions).toEqual({ password: true });
+	});
+});
+
+describe('Zynd AirnodeHub node (Zynd x AirnodeHub showcase)', () => {
+	const run = (params: Record<string, unknown>, handler: Handler) => {
+		const ctx = makeCtx(params, { handler });
+		return new ZyndAirnode().execute.call(ctx as never).then((out) => ({ out: out[0]!, ctx }));
+	};
+	const verified = { verified: true, requestHashMatches: true, signer: '0xabc', expectedSigner: '0xabc' };
+	const answer = { listingUrl: 'https://airnode-gleif.fly.dev/', operation: 'getLegalEntity', data: { lei: 'X' }, attestation: { airnode: '0xabc' }, verification: verified, payment: null };
+	const base = { operation: 'call', listingUrl: 'https://airnode-gleif.fly.dev/', airnodeOperation: 'getLegalEntity', airnodeParameters: '{}' };
+
+	it('Call: sends listing, operation, parsed parameters, cap and the paying listing', async () => {
+		const { out, ctx } = await run({ ...base, listingUrl: ' https://airnode-gleif.fly.dev/ ', airnodeParameters: '{"lei":"X"}', maxPaymentUsd: '0.02', payFrom: 'listing', payFromListingId: 'lst-1', failIfUnverified: true }, ok(answer));
+		expect(out[0]!.json).toEqual(answer);
+		expect(ctx.requests[0]).toMatchObject({
+			method: 'POST',
+			url: 'https://gw.test/n8n/v1/airnode/call',
+			body: { listingUrl: 'https://airnode-gleif.fly.dev/', operation: 'getLegalEntity', parameters: { lei: 'X' }, maxPaymentUsd: '0.02', payFromListingId: 'lst-1' },
+			timeout: 90_000,
+		});
+	});
+
+	it('Call: the developer wallet sends no listing id, an expression object is sent as is, an empty cap is left out', async () => {
+		const { ctx } = await run({ ...base, airnodeOperation: 'searchLegalEntities', airnodeParameters: { q: 1 }, maxPaymentUsd: '', payFrom: 'developer' }, ok(answer));
+		expect(ctx.requests[0]!.body).toEqual({ listingUrl: 'https://airnode-gleif.fly.dev/', operation: 'searchLegalEntities', parameters: { q: 1 } });
+	});
+
+	it('Call: an unverified answer fails by default, or passes through when allowed', async () => {
+		const bad = { ...answer, verification: { verified: false, reason: 'The signature was not made by the address this listing publishes' } };
+		await expect(run(base, ok(bad))).rejects.toThrow(/failed signature verification/);
+		const { out } = await run({ ...base, failIfUnverified: false }, ok(bad));
+		expect(out[0]!.json.verification).toMatchObject({ verified: false });
+	});
+
+	it('Call rejects a bad listing URL, a missing operation, non-object parameters and a bad cap', async () => {
+		await expect(run({ ...base, listingUrl: 'http://airnode-gleif.fly.dev/' }, ok(answer))).rejects.toThrow(/Listing URL/);
+		await expect(run({ ...base, airnodeOperation: ' ' }, ok(answer))).rejects.toThrow(/Airnode Operation/);
+		await expect(run({ ...base, airnodeParameters: '[1]' }, ok(answer))).rejects.toThrow(/JSON object/);
+		await expect(run({ ...base, maxPaymentUsd: 'lots' }, ok(answer))).rejects.toThrow(/Max Payment/);
+	});
+
+	it('Verify posts the kept attestation', async () => {
+		const att = { airnode: '0xabc', requestHash: '0x1', timestamp: '1', data: '{}', signature: '0x2' };
+		const { out, ctx } = await run({ ...base, operation: 'verify', airnodeParameters: '{"lei":"X"}', attestation: JSON.stringify(att) }, ok(verified));
+		expect(out[0]!.json).toEqual(verified);
+		expect(ctx.requests[0]).toMatchObject({ url: 'https://gw.test/n8n/v1/airnode/verify', body: { listingUrl: 'https://airnode-gleif.fly.dev/', operation: 'getLegalEntity', parameters: { lei: 'X' }, attestation: att } });
 	});
 });

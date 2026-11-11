@@ -14,7 +14,8 @@ import type { ApiKeyStoreLike } from './ApiKeyStore.js';
 import { deriveInput } from './A2AHandler.js';
 import type { AgentDnsClient } from './AgentDnsClient.js';
 import { AgentDnsError } from './AgentDnsClient.js';
-import type { IdentityService } from './IdentityService.js';
+import type { Ed25519Keypair, IdentityService } from './IdentityService.js';
+import type { ListingStoreLike } from './ListingStore.js';
 import { atomicToMicroUsd, formatUsd, parseUsd } from './money.js';
 import type { PaymentProcessor } from './PaymentProcessor.js';
 import type { TaskRow, TaskStoreLike } from './TaskStore.js';
@@ -24,7 +25,9 @@ const TERMINAL = new Set(['completed', 'failed', 'canceled', 'rejected']);
 
 export interface AgentCallerDeps {
   agentDns: Pick<AgentDnsClient, 'getEntity'>;
-  identity: Pick<IdentityService, 'withDeveloperKeypair'>;
+  identity: Pick<IdentityService, 'withDeveloperKeypair' | 'getListingKeypair'>;
+  /** Resolves `payFromListingId`. Without it, calls always pay from the developer wallet. */
+  store?: Pick<ListingStoreLike, 'getOwned'>;
   payments: Pick<PaymentProcessor, 'signX402' | 'parsePaymentRequired' | 'parsePaymentResponse'>;
   tasks: TaskStoreLike;
   apiKeys: Pick<ApiKeyStoreLike, 'reserveSpend' | 'refundSpend'>;
@@ -47,6 +50,8 @@ export interface OutboundResult {
 export interface CallInput {
   input: unknown;
   maxPaymentUsd?: unknown;
+  /** Pay from this listing's wallet (one of the caller's) instead of the developer wallet. Auth is still the developer's. */
+  payFromListingId?: unknown;
 }
 
 interface RpcReply {
@@ -86,6 +91,7 @@ export class AgentCaller {
   /** M2.14. Returns once the remote task is terminal; throws on payment, transport or timeout failures. */
   async call(key: AuthedApiKey, targetEntityId: string, req: CallInput): Promise<OutboundResult> {
     const maxMicro = parseUsd((req.maxPaymentUsd ?? this.deps.defaultMaxPaymentUsd) as string | number, 'maxPaymentUsd');
+    const payFrom = await this.payingListing(key.developerId, req.payFromListingId);
 
     let entity;
     try {
@@ -133,7 +139,7 @@ export class AgentCaller {
         const paidMessage = outboundMessage(req.input);
         const paid = await this.deps.identity.withDeveloperKeypair(key.developerId, (dev) => {
           signZyndAuth(paidMessage, dev); // fresh nonce: the first one was spent on the unpaid attempt
-          return this.deps.payments.signX402(dev.privateKey, requirements);
+          return this.deps.payments.signX402((payFrom ?? dev).privateKey, requirements);
         });
         // A transport error here keeps the reservation: nothing proves the payment was not received,
         // and over-counting spend is the safe direction for a cap.
@@ -176,6 +182,16 @@ export class AgentCaller {
   }
 
   // --- internals -----------------------------------------------------------------------------
+
+  /** The keypair of the listing that pays, or undefined for the developer wallet. Checked before any task is created. */
+  private async payingListing(developerId: string, raw: unknown): Promise<Ed25519Keypair | undefined> {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    if (typeof raw !== 'string') throw new ApiError('BAD_REQUEST', 'payFromListingId must be a string');
+    const owned = this.deps.store ? await this.deps.store.getOwned(developerId, raw) : undefined;
+    if (!owned) throw new ApiError('NOT_FOUND', 'payFromListingId is not one of your listings');
+    const l = owned.listing;
+    return this.deps.identity.getListingKeypair({ listingId: l.id, developerId: l.developerId, derivedKeyIndex: l.derivedKeyIndex });
+  }
 
   private async rpc(url: string, method: string, params: unknown, extraHeaders: Record<string, string>, deadline: number): Promise<RpcReply> {
     const left = deadline - Date.now();

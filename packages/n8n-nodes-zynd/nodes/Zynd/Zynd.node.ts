@@ -158,6 +158,27 @@ export class Zynd implements INodeType {
 					'The most you are willing to pay for this call, in USD (up to 6 decimals). The call fails if the agent asks for more. Leave empty to use the Gateway default.',
 				displayOptions: { show: { operation: ['callAgent'] } },
 			},
+			{
+				displayName: 'Pay From',
+				name: 'payFrom',
+				type: 'options',
+				default: 'developer',
+				options: [
+					{ name: 'Developer Wallet', value: 'developer', description: 'Your Zynd account\'s payer wallet' },
+					{ name: 'Listing Wallet', value: 'listing', description: 'The wallet of one of your listings, so an agent spends what it earns' },
+				],
+				description: 'Which wallet pays a paid agent',
+				displayOptions: { show: { operation: ['callAgent'] } },
+			},
+			{
+				displayName: 'Listing ID',
+				name: 'payFromListingId',
+				type: 'string',
+				default: '={{ $json.listingId }}',
+				required: true,
+				description: 'The listing whose wallet pays. The Zynd Trigger puts it in the field listingId.',
+				displayOptions: { show: { operation: ['callAgent'], payFrom: ['listing'] } },
+			},
 
 			// Get task
 			{
@@ -262,6 +283,11 @@ async function run(ctx: IExecuteFunctions, operation: Operation, i: number): Pro
 					throw new NodeOperationError(ctx.getNode(), 'Max Payment must be an amount in USD such as 0.05 (up to 6 decimals)', { itemIndex: i });
 				}
 				body.maxPaymentUsd = max;
+			}
+			if (ctx.getNodeParameter('payFrom', i, 'developer') === 'listing') {
+				const listingId = String(ctx.getNodeParameter('payFromListingId', i, '') ?? '').trim();
+				if (!listingId) throw new NodeOperationError(ctx.getNode(), 'Listing ID is required to pay from a listing wallet', { itemIndex: i });
+				body.payFromListingId = listingId;
 			}
 			const res = await gatewayRequest<TaskResult>(ctx, {
 				method: 'POST',

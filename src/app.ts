@@ -46,6 +46,7 @@ export function createApp(deps: AppDeps = {}): Express {
       agentDns: () => getServices().agentDns,
       listings,
       caller: () => getServices().caller,
+      airnode: () => getServices().airnode,
       a2a: () => getServices().a2a,
       rateLimiter: () => rateLimiter,
       ...deps.n8n,
