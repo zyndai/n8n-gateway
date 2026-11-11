@@ -1,0 +1,277 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+/* Procurement Desk theme. Source of truth: Request Due Diligence > options.customCss.
+   The Review and Decide page reads it from the trigger's params by expression.
+   n8n strips class/style from HTML fields, so the report marks sections with hidden
+   empty links (href "#dd-NAME") and this sheet styles the element right after each marker. */
+:root {
+  --dd-bg: #f5f6f8; --dd-surface: #ffffff; --dd-surface-2: #f9fafb; --dd-sunken: #f2f4f7;
+  --dd-border: #e4e7ec; --dd-border-strong: #d0d5dd;
+  --dd-text: #101828; --dd-text-2: #475467; --dd-text-3: #667085;
+  --dd-accent: #3b5bdb; --dd-accent-hover: #2f4ac0; --dd-accent-soft: #eef2ff; --dd-on-accent: #ffffff;
+  --dd-ok: #067647; --dd-ok-bg: #ecfdf3; --dd-ok-bd: #abefc6;
+  --dd-warn: #b54708; --dd-warn-bg: #fffaeb; --dd-warn-bd: #fedf89;
+  --dd-bad: #b42318; --dd-bad-bg: #fef3f2; --dd-bad-bd: #fecdca;
+  --dd-shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --dd-radius: 12px; --dd-radius-sm: 8px;
+  --dd-font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --dd-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --dd-panel-w: 360px;
+  --font-family: var(--dd-font);
+  --container-width: 100%;
+  --color-background: var(--dd-bg);
+  --color-input-text: var(--dd-text);
+  --color-error: var(--dd-bad);
+  --color-required: var(--dd-bad);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --dd-bg: #0b0f17; --dd-surface: #131823; --dd-surface-2: #181e2b; --dd-sunken: #0f141d;
+    --dd-border: #262d3b; --dd-border-strong: #353d4d;
+    --dd-text: #f2f4f7; --dd-text-2: #c4c9d4; --dd-text-3: #8d95a5;
+    --dd-accent: #7c93ff; --dd-accent-hover: #98a9ff; --dd-accent-soft: rgba(124,147,255,.14); --dd-on-accent: #0b0f17;
+    --dd-ok: #4ade80; --dd-ok-bg: rgba(74,222,128,.1); --dd-ok-bd: rgba(74,222,128,.32);
+    --dd-warn: #fbbf24; --dd-warn-bg: rgba(251,191,36,.1); --dd-warn-bd: rgba(251,191,36,.32);
+    --dd-bad: #f87171; --dd-bad-bg: rgba(248,113,113,.1); --dd-bad-bd: rgba(248,113,113,.32);
+    --dd-shadow: 0 1px 2px rgba(0,0,0,.4);
+    color-scheme: dark;
+  }
+}
+
+/* ---------- shell ---------- */
+html { -webkit-text-size-adjust: 100%; }
+body { font-family: var(--dd-font); font-size: 14px; line-height: 1.5; color: var(--dd-text); background: var(--dd-bg); min-height: 100vh; }
+.container { width: 100%; max-width: 960px; padding: 32px 24px 48px; text-align: left; margin: 0 auto; }
+.card { background: var(--dd-surface); border: 1px solid var(--dd-border); border-radius: var(--dd-radius); box-shadow: var(--dd-shadow); padding: 32px; margin: 0; }
+.test-notice { border-radius: var(--dd-radius-sm); font-size: 13px; }
+.form-header h1 { font-size: 24px; line-height: 1.25; font-weight: 650; letter-spacing: -.01em; color: var(--dd-text); }
+.form-header p { color: var(--dd-text-2); font-size: 15px; padding-top: 6px; max-width: 68ch; }
+.inputs-wrapper { padding: 24px 0 8px; }
+
+/* ---------- inputs ---------- */
+form label { color: var(--dd-text); font-size: 13px; font-weight: 600; padding-bottom: 6px; }
+label.form-required::after { color: var(--dd-bad); }
+form .form-input, .select-input { background: var(--dd-surface); border: 1px solid var(--dd-border-strong); border-radius: var(--dd-radius-sm); color: var(--dd-text); font-size: 14px; transition: border-color .15s, box-shadow .15s; }
+form .form-input { padding: 10px 12px; min-height: 42px; font-family: var(--dd-font); }
+form textarea.form-input { min-height: 88px; resize: vertical; line-height: 1.5; }
+form select { background: transparent; color: var(--dd-text); font-family: var(--dd-font); font-size: 14px; padding: 10px 12px; min-height: 40px; border-right-width: 10px; }
+form select option { background: var(--dd-surface); color: var(--dd-text); }
+form .form-input:focus, .select-input:focus-within { outline: none; border-color: var(--dd-accent); box-shadow: 0 0 0 3px var(--dd-accent-soft); }
+::placeholder { color: var(--dd-text-3); opacity: 1; }
+.form-group { margin-bottom: 18px; }
+.error-hidden { padding: 6px 0 0; font-size: 12px; color: var(--dd-bad); }
+.error-hidden:not(.error-show) { display: none; }
+form .form-input:has(+ .error-show), form .form-input.error { border-color: var(--dd-bad); }
+
+#submit-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: auto; min-width: 220px; height: 44px; padding: 0 20px; border-radius: var(--dd-radius-sm); background: var(--dd-accent); color: var(--dd-on-accent); font-family: var(--dd-font); font-size: 14px; font-weight: 600; transition: background .15s; }
+#submit-btn:hover { opacity: 1; background: var(--dd-accent-hover); }
+#submit-btn:focus-visible { outline: 3px solid var(--dd-accent-soft); outline-offset: 2px; }
+#submit-btn span { padding: 0; }
+#submit-btn span svg { fill: currentColor; }
+.n8n-link, hr { display: none !important; }
+
+/* ---------- HTML blocks: common ---------- */
+div.html { color: var(--dd-text); font-size: 14px; }
+div.html a[href^="#dd-"] { display: none; }
+div.html h1, div.html h2, div.html h3, div.html h4, div.html p, div.html ul, div.html ol { margin: 0; font-weight: inherit; }
+div.html li { margin: 0; }
+div.html b, div.html strong { font-weight: 600; }
+div.html a { color: var(--dd-accent); text-decoration: none; font-size: inherit; margin: 0; }
+div.html a:hover { text-decoration: underline; }
+div.html code { font-family: var(--dd-mono); font-size: 12.5px; background: var(--dd-sunken); border: 1px solid var(--dd-border); border-radius: 6px; padding: 1px 6px; overflow-wrap: anywhere; word-break: break-all; }
+div.html em { font-style: normal; color: var(--dd-text-3); font-size: 12.5px; }
+
+/* ---------- request page ---------- */
+a[href="#dd-request"] + div ol { list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; counter-reset: dd-step; font-size: 13px; }
+a[href="#dd-request"] + div li { counter-increment: dd-step; position: relative; margin: 0; padding: 14px 14px 14px 52px; background: var(--dd-surface-2); border: 1px solid var(--dd-border); border-radius: var(--dd-radius-sm); color: var(--dd-text-2); }
+a[href="#dd-request"] + div li::before { content: counter(dd-step); position: absolute; left: 14px; top: 14px; width: 26px; height: 26px; border-radius: 50%; background: var(--dd-accent-soft); color: var(--dd-accent); font-weight: 700; font-size: 13px; display: grid; place-items: center; }
+a[href="#dd-request"] + div li b { display: block; color: var(--dd-text); font-size: 14px; margin-bottom: 2px; }
+a[href="#dd-request"] + div p { margin-top: 12px; color: var(--dd-text-3); font-size: 12.5px; }
+a[href="#dd-section"] + div { padding-top: 12px; border-top: 1px solid var(--dd-border); margin-top: 6px; }
+a[href="#dd-section"] + div h3 { font-size: 15px; font-weight: 650; color: var(--dd-text); }
+a[href="#dd-section"] + div p { font-size: 13px; color: var(--dd-text-3); margin-top: 2px; }
+form.card:has(a[href="#dd-request"]) #field-6 { font-family: var(--dd-mono); font-size: 13px; }
+@media (min-width: 720px) {
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); column-gap: 16px; }
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper > * { grid-column: 1 / -1; min-width: 0; }
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper > .form-group:has(#field-3) { grid-column: 1 / span 3; }
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper > .form-group:has(#field-4) { grid-column: 4 / span 3; }
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper > .form-group:has(#field-6) { grid-column: 1 / span 4; }
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper > .form-group:has(#field-7) { grid-column: 5 / span 2; }
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper > .form-group:has(#field-10) { grid-column: 1 / span 3; }
+  form.card:has(a[href="#dd-request"]) .inputs-wrapper > .form-group.html { margin-bottom: 14px; }
+}
+
+/* busy overlay while n8n waits for the next page (its spinner gets an inline display style) */
+form.card { position: relative; }
+form.card:has(#submit-btn span[style*="inline-block"])::after {
+  content: "Hiring the Due Diligence Analyst on Zynd\A Specialists are buying signed records from AirnodeHub.\A This usually takes 1 to 2 minutes. Keep this tab open.";
+  white-space: pre-line; position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; text-align: center; padding: 120px 24px 24px;
+  background: color-mix(in srgb, var(--dd-bg) 86%, transparent); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  font-size: 15px; font-weight: 500; color: var(--dd-text-2); line-height: 1.7;
+}
+form.card:has(#submit-btn span[style*="inline-block"])::before {
+  content: ""; position: fixed; z-index: 51; left: 50%; top: calc(50% - 46px); width: 36px; height: 36px; margin-left: -18px;
+  border-radius: 50%; border: 3px solid var(--dd-border-strong); border-top-color: var(--dd-accent); animation: dd-spin .9s linear infinite;
+}
+@keyframes dd-spin { to { transform: rotate(360deg); } }
+form.card:has(a[href="#dd-report"]):has(#submit-btn span[style*="inline-block"])::after { content: "Recording your decision\A Saving the decision, report and payment trail to the audit log."; }
+
+/* ---------- review page ---------- */
+body:has(a[href="#dd-report"]) .container { max-width: 1320px; padding: 24px 24px 32px; }
+form.card:has(a[href="#dd-report"]) { padding: 0; overflow: hidden; }
+form.card:has(a[href="#dd-report"]) .form-header { padding: 16px 24px; border-bottom: 1px solid var(--dd-border); background: var(--dd-surface); }
+form.card:has(a[href="#dd-report"]) .form-header h1 { font-size: 16px; font-weight: 600; }
+form.card:has(a[href="#dd-report"]) .form-header p { font-size: 13px; padding-top: 2px; color: var(--dd-text-3); }
+form.card:has(a[href="#dd-report"]) .inputs-wrapper { padding: 0; }
+form.card:has(a[href="#dd-report"]) .form-group.html { margin: 0; padding: 24px; min-width: 0; }
+/* decision panel = everything after the report */
+form.card:has(a[href="#dd-report"]) .inputs-wrapper > :not(.html) { padding: 0 24px; margin: 0 0 16px; }
+form.card:has(a[href="#dd-report"]) .inputs-wrapper > div:has(> .multiselect) { padding-top: 22px; border-top: 1px solid var(--dd-border); }
+form.card:has(a[href="#dd-report"]) .inputs-wrapper > div:has(> .multiselect)::before { content: "Your decision"; display: block; font-size: 16px; font-weight: 650; margin-bottom: 2px; }
+form.card:has(a[href="#dd-report"]) .inputs-wrapper > div:has(> .multiselect) > label { font-weight: 400; color: var(--dd-text-3); padding-bottom: 12px; }
+form.card:has(a[href="#dd-report"]) .inputs-wrapper > div:has(> .multiselect) > label::after { content: ""; }
+form.card:has(a[href="#dd-report"]) #submit-btn { width: calc(100% - 48px); margin: 4px 24px 24px; }
+.multiselect { padding: 0; display: grid; gap: 8px; }
+.multiselect-option { position: relative; padding: 0; display: block; }
+.multiselect-option input.multiselect-checkbox { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); margin: 0; border-color: var(--dd-border-strong); background: var(--dd-surface); }
+.multiselect-option label { display: block; padding: 11px 14px 11px 44px; border: 1px solid var(--dd-border-strong); border-radius: var(--dd-radius-sm); background: var(--dd-surface); color: var(--dd-text); font-size: 14px; font-weight: 500; transition: border-color .15s, background .15s; }
+.multiselect-option:hover label { border-color: var(--dd-text-3); }
+.multiselect-option:has(:checked) label { border-color: var(--dd-accent); background: var(--dd-accent-soft); }
+.multiselect-option:has(:focus-visible) label { box-shadow: 0 0 0 3px var(--dd-accent-soft); }
+.multiselect[data-radio-select] .multiselect-checkbox:checked { background: var(--dd-surface); border-color: var(--dd-accent); }
+.multiselect-option:has(#option0_field-1:checked) label { border-color: var(--dd-ok); background: var(--dd-ok-bg); }
+.multiselect-option:has(#option1_field-1:checked) label { border-color: var(--dd-bad); background: var(--dd-bad-bg); }
+.multiselect-option:has(#option2_field-1:checked) label { border-color: var(--dd-warn); background: var(--dd-warn-bg); }
+#option0_field-1:checked { border-color: var(--dd-ok) !important; }
+#option1_field-1:checked { border-color: var(--dd-bad) !important; }
+#option2_field-1:checked { border-color: var(--dd-warn) !important; }
+
+@media (min-width: 1100px) {
+  /* report scrolls on the left, decision panel stays in view on the right */
+  form.card:has(a[href="#dd-report"]) {
+    display: grid; grid-template-columns: minmax(0, 1fr) var(--dd-panel-w);
+    grid-template-rows: auto auto auto auto auto 1fr; height: calc(100vh - 56px); height: calc(100dvh - 56px); min-height: 640px;
+    background: linear-gradient(to left, var(--dd-surface-2) var(--dd-panel-w), var(--dd-surface) var(--dd-panel-w));
+  }
+  form.card:has(a[href="#dd-report"]) .inputs-wrapper { display: contents; }
+  form.card:has(a[href="#dd-report"]) .form-header { grid-column: 1 / -1; grid-row: 1; }
+  form.card:has(a[href="#dd-report"]) .form-group.html { grid-column: 1; grid-row: 2 / -1; overflow-y: auto; overscroll-behavior: contain; padding: 28px 32px 40px; border-right: 1px solid var(--dd-border); }
+  form.card:has(a[href="#dd-report"]) .inputs-wrapper > :not(.html), form.card:has(a[href="#dd-report"]) #submit-btn { grid-column: 2; }
+  form.card:has(a[href="#dd-report"]) .inputs-wrapper > div:has(> .multiselect) { border-top: 0; }
+  form.card:has(a[href="#dd-report"]) #submit-btn { align-self: start; }
+}
+
+/* ---------- report ---------- */
+a[href="#dd-report"] + div { display: grid; gap: 20px; }
+a[href="#dd-report"] + div h3 { font-size: 15px; font-weight: 650; color: var(--dd-text); }
+a[href="#dd-report"] + div h4 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--dd-text-3); margin: 16px 0 8px; }
+/* hero */
+a[href="#dd-hero"] + div { display: grid; gap: 6px; }
+a[href="#dd-hero"] + div > p:first-child { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--dd-text-3); }
+a[href="#dd-hero"] + div h1 { font-size: 28px; line-height: 1.2; font-weight: 700; letter-spacing: -.015em; overflow-wrap: anywhere; }
+a[href="#dd-hero"] + div h1 + p { color: var(--dd-text-2); }
+a[href="#dd-hero"] + div h1 + p span { white-space: nowrap; }
+a[href^="#dd-v-"] + h2 { justify-self: start; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 5px 12px 5px 10px; border-radius: 999px; border: 1px solid; margin: 4px 0 2px; }
+a[href^="#dd-v-"] + h2::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+a[href="#dd-v-ok"] + h2 { color: var(--dd-ok); background: var(--dd-ok-bg); border-color: var(--dd-ok-bd); }
+a[href="#dd-v-warn"] + h2 { color: var(--dd-warn); background: var(--dd-warn-bg); border-color: var(--dd-warn-bd); }
+a[href="#dd-v-bad"] + h2 { color: var(--dd-bad); background: var(--dd-bad-bg); border-color: var(--dd-bad-bd); }
+/* stat tiles */
+a[href="#dd-stats"] + ul { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 14px; }
+a[href="#dd-stats"] + ul > li { margin: 0; padding: 14px 16px; border: 1px solid var(--dd-border); border-radius: var(--dd-radius-sm); background: var(--dd-surface); display: grid; gap: 2px; align-content: start; min-width: 0; }
+a[href="#dd-stats"] + ul > li > span:first-child { font-size: 12px; color: var(--dd-text-3); font-weight: 500; }
+a[href="#dd-stats"] + ul > li > strong { font-size: 22px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+a[href="#dd-stats"] + ul > li > strong sub { font-size: 13px; font-weight: 500; color: var(--dd-text-3); vertical-align: baseline; margin-left: 2px; }
+a[href="#dd-stats"] + ul > li > em { overflow-wrap: anywhere; }
+a[href^="#dd-r-"] + span { display: block; height: 6px; border-radius: 999px; background: var(--dd-sunken); border: 1px solid var(--dd-border); overflow: hidden; margin: 6px 0 2px; }
+a[href^="#dd-r-"] + span::after { content: ""; display: block; height: 100%; width: 2%; background: var(--dd-ok); border-radius: inherit; }
+a[href="#dd-band-warn"] ~ span::after { background: var(--dd-warn) !important; }
+a[href="#dd-band-bad"] ~ span::after { background: var(--dd-bad) !important; }
+a[href="#dd-r-10"] + span::after { width: 10%; } a[href="#dd-r-20"] + span::after { width: 20%; } a[href="#dd-r-30"] + span::after { width: 30%; }
+a[href="#dd-r-40"] + span::after { width: 40%; } a[href="#dd-r-50"] + span::after { width: 50%; } a[href="#dd-r-60"] + span::after { width: 60%; }
+a[href="#dd-r-70"] + span::after { width: 70%; } a[href="#dd-r-80"] + span::after { width: 80%; } a[href="#dd-r-90"] + span::after { width: 90%; }
+a[href="#dd-r-100"] + span::after { width: 100%; }
+/* panels */
+a[href="#dd-grid"] + div { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 20px; align-items: start; }
+a[href="#dd-panel"] + div { border: 1px solid var(--dd-border); border-radius: var(--dd-radius); background: var(--dd-surface); padding: 20px; min-width: 0; }
+a[href="#dd-panel"] + div > div:first-child { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin-bottom: 12px; }
+a[href="#dd-panel"] + div > div:first-child p { font-size: 12.5px; color: var(--dd-text-3); width: 100%; order: 3; }
+a[href="#dd-panel"] + div > p { color: var(--dd-text-2); }
+a[href="#dd-panel"] + div > p + p { margin-top: 10px; }
+a[href="#dd-summary"] + div { border: 1px solid var(--dd-border); border-left: 3px solid var(--dd-accent); border-radius: var(--dd-radius); background: var(--dd-surface-2); padding: 18px 20px; display: grid; gap: 8px; }
+a[href="#dd-summary"] + div p { color: var(--dd-text); line-height: 1.65; max-width: 80ch; }
+a[href="#dd-summary"] + div ul { list-style: none; display: grid; gap: 4px; }
+a[href="#dd-summary"] + div ul li { padding-left: 18px; position: relative; color: var(--dd-text-2); }
+a[href="#dd-summary"] + div ul li::before { content: ""; position: absolute; left: 4px; top: .6em; width: 6px; height: 6px; border-radius: 50%; background: var(--dd-accent); }
+/* chips */
+a[href^="#dd-chip-"] + b { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--dd-border-strong); color: var(--dd-text-2); background: var(--dd-sunken); white-space: nowrap; }
+a[href="#dd-chip-ok"] + b { color: var(--dd-ok); background: var(--dd-ok-bg); border-color: var(--dd-ok-bd); }
+a[href="#dd-chip-warn"] + b { color: var(--dd-warn); background: var(--dd-warn-bg); border-color: var(--dd-warn-bd); }
+a[href="#dd-chip-bad"] + b { color: var(--dd-bad); background: var(--dd-bad-bg); border-color: var(--dd-bad-bd); }
+/* key/value tables */
+a[href="#dd-kv"] + table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+a[href="#dd-kv"] + table th, a[href="#dd-kv"] + table td { padding: 8px 0; border-top: 1px solid var(--dd-border); vertical-align: top; text-align: left; font-size: 13.5px; }
+a[href="#dd-kv"] + table tr:first-child > * { border-top: 0; }
+a[href="#dd-kv"] + table th { width: 40%; padding-right: 12px; font-weight: 500; color: var(--dd-text-3); }
+a[href="#dd-kv"] + table td { color: var(--dd-text); overflow-wrap: anywhere; }
+/* findings */
+a[href="#dd-findings"] + ul { list-style: none; display: grid; gap: 8px; }
+a[href="#dd-findings"] + ul li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: baseline; color: var(--dd-text-2); font-size: 13.5px; }
+a[href="#dd-findings"] + ul li b { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 1px 7px; border-radius: 5px; color: var(--dd-text-3); background: var(--dd-sunken); border: 1px solid var(--dd-border); }
+a[href="#dd-lvl-warn"] + b { color: var(--dd-warn) !important; background: var(--dd-warn-bg) !important; border-color: var(--dd-warn-bd) !important; }
+a[href="#dd-lvl-bad"] + b { color: var(--dd-bad) !important; background: var(--dd-bad-bg) !important; border-color: var(--dd-bad-bd) !important; }
+a[href="#dd-lvl-ok"] + b { color: var(--dd-ok) !important; background: var(--dd-ok-bg) !important; border-color: var(--dd-ok-bd) !important; }
+/* data tables: real tables on wide screens, stacked cards on narrow ones */
+a[href="#dd-table"] + div { overflow-x: auto; border: 1px solid var(--dd-border); border-radius: var(--dd-radius-sm); margin-top: 12px; }
+a[href="#dd-table"] + div table { width: 100%; border-collapse: collapse; font-size: 13px; }
+a[href="#dd-table"] + div th { text-align: left; font-size: 12px; font-weight: 600; color: var(--dd-text-3); background: var(--dd-surface-2); padding: 10px 12px; border-bottom: 1px solid var(--dd-border); white-space: nowrap; }
+a[href="#dd-table"] + div td { padding: 10px 12px; border-bottom: 1px solid var(--dd-border); vertical-align: top; color: var(--dd-text); overflow-wrap: anywhere; }
+a[href="#dd-table"] + div tbody tr:last-child td { border-bottom: 0; }
+a[href="#dd-table"] + div td[headers="Amount"], a[href="#dd-table"] + div thead th:nth-child(3):nth-last-child(2) { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+a[href="#dd-table"] + div td code { white-space: nowrap; word-break: normal; }
+a[href="#dd-table"] + div td em { display: block; margin-top: 2px; }
+a[href="#dd-table"] + div td b { font-weight: 600; }
+a[href="#dd-ok"] + b, a[href="#dd-fail"] + b { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
+a[href="#dd-ok"] + b { color: var(--dd-ok); }
+a[href="#dd-fail"] + b { color: var(--dd-bad); }
+a[href="#dd-ok"] + b::before { content: "\2713"; font-weight: 700; }
+a[href="#dd-fail"] + b::before { content: "\2715"; font-weight: 700; }
+a[href="#dd-total"] + p { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 12px; font-size: 13px; color: var(--dd-text-2); }
+a[href="#dd-total"] + p b { color: var(--dd-text); }
+@media (max-width: 760px) {
+  /* each row becomes a compact card: title line, then two values per line */
+  a[href="#dd-table"] + div { border: 0; overflow: visible; }
+  a[href="#dd-table"] + div table, a[href="#dd-table"] + div tbody { display: block; width: 100%; }
+  a[href="#dd-table"] + div thead { display: none; }
+  a[href="#dd-table"] + div tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; border: 1px solid var(--dd-border); border-radius: var(--dd-radius-sm); padding: 12px 14px; margin-bottom: 8px; background: var(--dd-surface); }
+  a[href="#dd-table"] + div td { display: block; padding: 0; border: 0; min-width: 0; text-align: left !important; }
+  a[href="#dd-table"] + div td[headers="Payment"], a[href="#dd-table"] + div td[headers="Source"] { grid-column: 1 / -1; }
+  a[href="#dd-table"] + div td[headers="Payment"] em, a[href="#dd-table"] + div td[headers="Source"] em { display: inline; margin: 0 0 0 4px; }
+  a[href="#dd-table"] + div td[headers="For"], a[href="#dd-table"] + div td[headers="Fetched by"], a[href="#dd-table"] + div td[headers="Signed"] { color: var(--dd-text-3); font-size: 12.5px; }
+  a[href="#dd-table"] + div td[headers="For"] { grid-column: 1 / -1; }
+  a[href="#dd-table"] + div td[headers="Amount"] { font-weight: 600; }
+  a[href="#dd-table"] + div td[headers="Transaction"], a[href="#dd-table"] + div td[headers="Signature"], a[href="#dd-table"] + div td[headers="Signer"] { justify-self: end; }
+}
+
+/* ---------- phones ---------- */
+@media (max-width: 600px) {
+  .container, body:has(a[href="#dd-report"]) .container { width: 100%; padding: 16px 16px 32px; min-height: 0; }
+  .card { padding: 20px 16px; border-radius: var(--dd-radius); border: 1px solid var(--dd-border); box-shadow: var(--dd-shadow); background: var(--dd-surface); margin: 0; }
+  .form-header h1 { font-size: 20px; }
+  .form-header p { font-size: 14px; }
+  #submit-btn { width: 100%; }
+  form.card:has(a[href="#dd-request"]) #field-6 { font-size: 11.5px; padding-left: 10px; padding-right: 10px; }
+  a[href="#dd-request"] + div ol { grid-template-columns: 1fr; gap: 8px; }
+  form.card:has(a[href="#dd-report"]) .form-header { padding: 14px 16px; }
+  form.card:has(a[href="#dd-report"]) .form-group.html { padding: 18px 16px; }
+  form.card:has(a[href="#dd-report"]) .inputs-wrapper > :not(.html) { padding: 0 16px; }
+  form.card:has(a[href="#dd-report"]) #submit-btn { width: calc(100% - 32px); margin: 4px 16px 20px; }
+  a[href="#dd-hero"] + div h1 { font-size: 22px; }
+  a[href="#dd-stats"] + ul { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  a[href="#dd-stats"] + ul > li { padding: 12px; }
+  a[href="#dd-stats"] + ul > li > strong { font-size: 18px; }
+  a[href="#dd-panel"] + div { padding: 16px; }
+  a[href="#dd-kv"] + table th { width: 38%; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation-duration: 0s !important; } }

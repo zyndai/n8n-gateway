@@ -1,0 +1,424 @@
+{
+ "prepare": {
+  "requestId": "DD-20261111-24",
+  "requestedBy": "Priya, Procurement",
+  "companyName": "Johnson Matthey PLC",
+  "companyNumber": "00033774",
+  "lei": "",
+  "walletAddress": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  "chain": "bsc",
+  "purpose": "Onboard as catalyst supplier; first payment 25,000 USDC"
+ },
+ "analyst": {
+  "analystId": "zns:d602c0ef953cfd8e113bf015b3285a42",
+  "analystName": "Due Diligence Analyst",
+  "found": true
+ },
+ "call": {
+  "taskId": "71115e7b-216e-42f9-9ca5-994140fb19aa",
+  "status": "COMPLETED",
+  "output": {
+   "news": {
+    "total": 0,
+    "recent": [],
+    "status": "checked",
+    "adverse": []
+   },
+   "team": [
+    {
+     "name": "Counterparty Check",
+     "entityId": "zns:0ee8bb9aaa5d8f682756b6eba5591855",
+     "foundVia": "Zynd search"
+    },
+    {
+     "name": "Wallet Risk Screener",
+     "entityId": "zns:7e2b5c1f9628fe2429a9d663bd03111b",
+     "foundVia": "Zynd search"
+    }
+   ],
+   "wallet": {
+    "tags": [],
+    "flags": [
+     {
+      "code": "NAMED",
+      "level": "info",
+      "message": "Resolves to vitalik.eth, vitalik.lens"
+     }
+    ],
+    "summary": "0xd8dA...6045 on bsc: clean (score 0), Vitalik Buterin, vitalik.eth",
+    "verdict": "clean",
+    "identity": [
+     {
+      "name": "vitalik.eth",
+      "platform": "ens",
+      "displayName": "vitalik.eth"
+     },
+     {
+      "name": "vitalik.lens",
+      "platform": "lens",
+      "displayName": "Vitalik Buterin"
+     }
+    ],
+    "screening": {
+     "label": "Vitalik Buterin",
+     "status": "scored",
+     "category": null,
+     "frozenBy": null,
+     "sanction": null,
+     "riskLevel": "LOW",
+     "riskScore": 0,
+     "sanctioned": false,
+     "directExposure": 0,
+     "indirectExposure": 0,
+     "unscorableReason": null,
+     "mixerCounterparties": 0,
+     "sanctionedCounterparties": 0
+    }
+   },
+   "company": {
+    "flags": [
+     {
+      "code": "NO_REGISTRABLE_PSC",
+      "level": "info",
+      "message": "No registrable person with significant control (usual for a widely held listed company)"
+     },
+     {
+      "code": "NO_PARENT",
+      "level": "info",
+      "message": "No ultimate parent reported (NO_KNOWN_PERSON)"
+     }
+    ],
+    "entity": {
+     "lei": "2138001AVBSD1HSC6Z10",
+     "status": "ACTIVE",
+     "category": "GENERAL",
+     "legalForm": "B6ES",
+     "legalName": "JOHNSON MATTHEY PLC",
+     "creationDate": "1891-04-11T00:00:00Z",
+     "jurisdiction": "GB",
+     "legalAddress": "5TH FLOOR 2 GRESHAM STREET, LONDON, EC2V 7AD, GB",
+     "registeredAs": "00033774",
+     "registration": {
+      "status": "ISSUED",
+      "lastUpdateDate": "2026-10-26T17:28:30Z",
+      "nextRenewalDate": "2027-01-11T00:00:00Z",
+      "corroborationLevel": "FULLY_CORROBORATED"
+     }
+    },
+    "parent": {
+     "type": "exception",
+     "reason": "NO_KNOWN_PERSON",
+     "category": "ULTIMATE_ACCOUNTING_CONSOLIDATION_PARENT"
+    },
+    "rating": "low",
+    "company": {
+     "name": "JOHNSON MATTHEY PLC",
+     "type": "plc",
+     "number": "00033774",
+     "status": "active",
+     "sicCodes": [
+      "20590",
+      "24410",
+      "29320",
+      "71121"
+     ],
+     "hasCharges": false,
+     "incorporatedOn": "1891-04-11",
+     "accountsOverdue": false,
+     "registeredOffice": "Hq Building, Royston, SG8 5HE",
+     "hasInsolvencyHistory": false,
+     "lastAccountsMadeUpTo": "2026-03-31",
+     "confirmationStatementOverdue": false
+    },
+    "summary": "JOHNSON MATTHEY PLC: low risk, 0 issue(s), 5/5 signed sources",
+    "officers": {
+     "current": [
+      {
+       "name": "PRICE, Simon James, Dr",
+       "role": "secretary",
+       "appointedOn": "2023-06-07",
+       "nationality": null
+      },
+      {
+       "name": "CONDON, Liam",
+       "role": "director",
+       "appointedOn": "2022-03-01",
+       "nationality": "Irish"
+      },
+      {
+       "name": "COSSLETT, Andrew Peter",
+       "role": "director",
+       "appointedOn": "2025-07-17",
+       "nationality": "British"
+      },
+      {
+       "name": "FORST, Rita",
+       "role": "director",
+       "appointedOn": "2021-10-04",
+       "nationality": "German"
+      },
+      {
+       "name": "JUDGE, Alastair Anthony",
+       "role": "director",
+       "appointedOn": "2026-01-01",
+       "nationality": "British"
+      },
+      {
+       "name": "LIU, Xiaozhi, Dr",
+       "role": "director",
+       "appointedOn": "2019-04-02",
+       "nationality": "German"
+      },
+      {
+       "name": "LYNCH, Sinead Caitlin",
+       "role": "director",
+       "appointedOn": "2025-01-01",
+       "nationality": "Irish"
+      },
+      {
+       "name": "PIKE, Richard Neil",
+       "role": "director",
+       "appointedOn": "2025-04-01",
+       "nationality": "British"
+      },
+      {
+       "name": "ROSENBERG, Joachim",
+       "role": "director",
+       "appointedOn": "2026-07-16",
+       "nationality": "Swedish"
+      },
+      {
+       "name": "SOUTHERN, Julie",
+       "role": "director",
+       "appointedOn": "2026-07-16",
+       "nationality": "British"
+      },
+      {
+       "name": "WEBB, Douglas Russell",
+       "role": "director",
+       "appointedOn": "2019-09-02",
+       "nationality": "British"
+      }
+     ],
+     "activeCount": 11,
+     "resignedCount": 52
+    },
+    "riskScore": 0,
+    "controllers": {
+     "items": [],
+     "activeCount": 0
+    }
+   },
+   "reasons": [
+    "Company is active and current on its filings; wallet screened clean; every source signature re-verified"
+   ],
+   "sources": [
+    {
+     "agent": "Counterparty Check",
+     "error": null,
+     "label": "GLEIF legal entity record",
+     "signer": "0x26d83124541e89ef28B9A5FB012B4B5f4097C20c",
+     "airnode": "airnode-gleif",
+     "paidUsd": 0,
+     "signedAt": "2026-11-11T20:54:45.000Z",
+     "verified": true,
+     "operation": "searchLegalEntities",
+     "paymentTxn": null,
+     "requestHash": "0x8b147513fd58ad54a6d4e60a810b9a65bb0cc117d8ab30ac169acca18ed28f6c",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Counterparty Check",
+     "error": null,
+     "label": "Companies House company profile",
+     "signer": "0x392228E5CCA260313e5ed337Ed3561B59A1e4bFF",
+     "airnode": "airnode-companies-house",
+     "paidUsd": 0.01,
+     "signedAt": "2026-11-11T20:54:48.000Z",
+     "verified": true,
+     "operation": "getCompanyProfile",
+     "paymentTxn": "0x38e30a74bd1d1308267760a9037f9bda20e350d4f92334bf0d1aabd1d52cc73a",
+     "requestHash": "0x0cd978b9900506e57a9d085b7c8cde3346254b03d8b2a72630dcb3a30f256b61",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Counterparty Check",
+     "error": null,
+     "label": "Companies House officers",
+     "signer": "0x392228E5CCA260313e5ed337Ed3561B59A1e4bFF",
+     "airnode": "airnode-companies-house",
+     "paidUsd": 0.01,
+     "signedAt": "2026-11-11T20:54:50.000Z",
+     "verified": true,
+     "operation": "listCompanyOfficers",
+     "paymentTxn": "0xb52084f61f40baaa09f40ad1aeea221b956c641072b2f69f26169252343dcd5e",
+     "requestHash": "0x00087c937aeb33873805ffc00a2b69df55420d27ae4ea42996f755ac82236eb1",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Counterparty Check",
+     "error": null,
+     "label": "Companies House persons with significant control",
+     "signer": "0x392228E5CCA260313e5ed337Ed3561B59A1e4bFF",
+     "airnode": "airnode-companies-house",
+     "paidUsd": 0.01,
+     "signedAt": "2026-11-11T20:54:53.000Z",
+     "verified": true,
+     "operation": "listPersonsWithSignificantControl",
+     "paymentTxn": "0xe6b7d536a8c0ac9c150494c85a7dea2525c8e6173a0f17ced282dac17ef380f9",
+     "requestHash": "0xcbf495231ac1bd841f12b25a88a9764d27654e8a681bfaf12607f9e4068cdaa2",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Counterparty Check",
+     "error": null,
+     "label": "GLEIF ultimate parent",
+     "signer": "0x26d83124541e89ef28B9A5FB012B4B5f4097C20c",
+     "airnode": "airnode-gleif",
+     "paidUsd": 0.01,
+     "signedAt": "2026-11-11T20:54:56.000Z",
+     "verified": true,
+     "operation": "getUltimateParentReportingException",
+     "paymentTxn": "0x64f023820ab8ba66019266b9f6d3a46b787a6d593f77720fea592bddcff523c6",
+     "requestHash": "0xefbdd49dee34c457fcc794a9b8f8f0262946557919c881f0852f98b026c2492f",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Wallet Risk Screener",
+     "error": null,
+     "label": "PublicAML risk screen",
+     "signer": "0xD4F35a6F7bdbB581f714A2d4F812C8334148c47d",
+     "airnode": "airnode-publicaml",
+     "paidUsd": 0.01,
+     "signedAt": "2026-11-11T20:55:15.000Z",
+     "verified": true,
+     "operation": "enrichAddresses",
+     "paymentTxn": "0x589ffb824db4e9420bb84b99c9b1208f313fa56ef5dc0b7768e8cbf0777f9332",
+     "requestHash": "0xea12f7cc7280ad6ce159a4d68100b97abd2e0b50698da3df51aae25393831413",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Wallet Risk Screener",
+     "error": null,
+     "label": "Kleros Scout address tags",
+     "signer": "0xd7dB36889c3a88084660d9a4c2412aA53D33aF88",
+     "airnode": "airnode-kleros-scout",
+     "paidUsd": 0.01,
+     "signedAt": "2026-11-11T20:55:19.000Z",
+     "verified": true,
+     "operation": "getAddressTags",
+     "paymentTxn": "0xf30cbf26383dc5f115a9c9bddb6e9b92e24bfae8abda96444be394e6036e8dbc",
+     "requestHash": "0x9b6b807371a98ac07d9b3c02b1ff84b11c3146c2bd05373bfebe070ec3874222",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Wallet Risk Screener",
+     "error": null,
+     "label": "Web3.bio identity names",
+     "signer": "0x351F51BC185b05D4BA34bDb46f0f752FC2F00530",
+     "airnode": "airnode-web3bio",
+     "paidUsd": 0,
+     "signedAt": "2026-11-11T20:55:21.000Z",
+     "verified": true,
+     "operation": "resolveNames",
+     "paymentTxn": null,
+     "requestHash": "0xc8857ec6219f5beb4b745ec7362533bcad359590f51a0bb0d58625080109f6c1",
+     "requestHashMatches": true
+    },
+    {
+     "agent": "Due Diligence Analyst",
+     "error": null,
+     "label": "Briefpixel news search",
+     "signer": "0xF95819C1B568e1a31f601e6a620Ecc60C6A1f934",
+     "airnode": "airnode-briefpixel",
+     "paidUsd": 0,
+     "signedAt": "2026-11-11T20:55:27.000Z",
+     "verified": true,
+     "operation": "listArticles",
+     "paymentTxn": null,
+     "requestHash": "0x23a47fe114cf3a74483e3c59bdc402ef5e2543a4ebf900ea01dbda3b13c4f409",
+     "requestHashMatches": true
+    }
+   ],
+   "subject": {
+    "lei": "2138001AVBSD1HSC6Z10",
+    "chain": "bsc",
+    "purpose": "Onboard as catalyst supplier; first payment 25,000 USDC",
+    "companyName": "Johnson Matthey PLC",
+    "companyNumber": "00033774",
+    "walletAddress": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+   },
+   "verdict": "APPROVE",
+   "payments": [
+    {
+     "to": "Counterparty Check",
+     "txn": "0x887429de47abd399f9265077b4a1a8fc20b10f9f6216b194c09c56765a28e309",
+     "usd": 0.05,
+     "from": "Due Diligence Analyst",
+     "what": "hire"
+    },
+    {
+     "to": "Wallet Risk Screener",
+     "txn": "0xb5a658ef8ba015b98b126200bff59b314a801e3cd6cb8b8199f550c1999ed85e",
+     "usd": 0.03,
+     "from": "Due Diligence Analyst",
+     "what": "hire"
+    },
+    {
+     "to": "AirnodeHub airnode-companies-house",
+     "txn": "0x38e30a74bd1d1308267760a9037f9bda20e350d4f92334bf0d1aabd1d52cc73a",
+     "usd": 0.01,
+     "from": "Counterparty Check",
+     "what": "getCompanyProfile"
+    },
+    {
+     "to": "AirnodeHub airnode-companies-house",
+     "txn": "0xb52084f61f40baaa09f40ad1aeea221b956c641072b2f69f26169252343dcd5e",
+     "usd": 0.01,
+     "from": "Counterparty Check",
+     "what": "listCompanyOfficers"
+    },
+    {
+     "to": "AirnodeHub airnode-companies-house",
+     "txn": "0xe6b7d536a8c0ac9c150494c85a7dea2525c8e6173a0f17ced282dac17ef380f9",
+     "usd": 0.01,
+     "from": "Counterparty Check",
+     "what": "listPersonsWithSignificantControl"
+    },
+    {
+     "to": "AirnodeHub airnode-gleif",
+     "txn": "0x64f023820ab8ba66019266b9f6d3a46b787a6d593f77720fea592bddcff523c6",
+     "usd": 0.01,
+     "from": "Counterparty Check",
+     "what": "getUltimateParentReportingException"
+    },
+    {
+     "to": "AirnodeHub airnode-publicaml",
+     "txn": "0x589ffb824db4e9420bb84b99c9b1208f313fa56ef5dc0b7768e8cbf0777f9332",
+     "usd": 0.01,
+     "from": "Wallet Risk Screener",
+     "what": "enrichAddresses"
+    },
+    {
+     "to": "AirnodeHub airnode-kleros-scout",
+     "txn": "0xf30cbf26383dc5f115a9c9bddb6e9b92e24bfae8abda96444be394e6036e8dbc",
+     "usd": 0.01,
+     "from": "Wallet Risk Screener",
+     "what": "getAddressTags"
+    }
+   ],
+   "narrative": "APPROVE onboarding JOHNSON MATTHEY PLC as a catalyst supplier for the first payment of 25,000 USDC, based on its active status, current filings, risk score of 0 and re-verification of all 9 source signatures. Company checks showed 11 officers, with registrable persons with significant control and an ultimate parent not found. Wallet screening returned a clean verdict and a score of 0, but labelled the wallet as Vitalik Buterin and resolved it to vitalik.eth and vitalik.lens. News was checked, and adverse news was not found. Evidence linking the screened wallet to JOHNSON MATTHEY PLC was not found in the supplied facts.",
+   "requestId": "DD-20261111-24",
+   "riskScore": 0,
+   "preparedAt": "2026-11-11T20:55:33.464Z",
+   "preparedBy": "Due Diligence Analyst",
+   "narrativeBy": "OpenAI gpt-6.1-sol (summary of the facts below)",
+   "sourcesTotal": 9,
+   "sourcesVerified": 9,
+   "totalNetworkSpendUsd": 0.14
+  },
+  "error": null,
+  "paymentUsd": "0.150000",
+  "paymentTxn": "0x8069f2886eb4b77f4e760cad3c882ce8ec96061aa6772c2cfd418c55cda0df57"
+ }
+}
