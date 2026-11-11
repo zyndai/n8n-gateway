@@ -22,6 +22,7 @@ import { RateLimiter, type RateLimiterOptions } from '../../src/services/RateLim
 import { PaymentProofVault } from '../../src/services/PaymentRecovery.js';
 import { WebhookForwarder, type ForwardPayload } from '../../src/services/WebhookForwarder.js';
 import { encryptSecret, parseMasterKey } from '../../src/services/keyVault.js';
+import type { PaymentLogger } from '../../src/services/paymentLog.js';
 import { signZyndAuth, type A2AMessage } from '../../src/services/zyndAuth.js';
 import { FakeAgentDns } from './fakeAgentDns.js';
 import { MemoryApiKeys, MemoryNonces, MemoryTasks } from './memoryStores.js';
@@ -33,6 +34,23 @@ export const WEBHOOK_SECRET = 'webhook-secret-123';
 export const masterKey = parseMasterKey('ab'.repeat(32));
 export const devSeed = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
 const silent = { info: () => {}, warn: () => {}, error: () => {} };
+
+/** A logger that remembers every line with its level, for asserting on payment logs. */
+export function captureLog() {
+  const entries: { level: 'info' | 'warn' | 'error'; line: string }[] = [];
+  const at = (level: 'info' | 'warn' | 'error') => (msg: unknown) => void entries.push({ level, line: String(msg) });
+  return {
+    entries,
+    info: at('info'),
+    warn: at('warn'),
+    error: at('error'),
+    /** Lines whose text starts with `event`. */
+    of: (event: string) => entries.filter((e) => e.line.startsWith(event)),
+    get lines() {
+      return entries.map((e) => e.line);
+    },
+  };
+}
 
 export interface Job {
   payload: ForwardPayload;
@@ -58,6 +76,8 @@ export interface HarnessOptions {
   stores?: { tasks?: TaskStoreLike; apiKeys?: ApiKeyStoreLike; nonces?: NonceStoreLike };
   /** Fake AirnodeHub: the fetch AirnodeClient uses. Unset = /n8n/v1/airnode/* answers 501. */
   airnodeFetch?: typeof fetch;
+  /** Payment log sink for every payment service. Default: silent. */
+  log?: PaymentLogger;
 }
 
 export async function makeGateway(opts: HarnessOptions = {}) {
@@ -109,6 +129,7 @@ export async function makeGateway(opts: HarnessOptions = {}) {
   const x402 = { ...loadConfig({}).x402, inboundPriceUsd: opts.price };
   const payments = new PaymentProcessor({
     config: x402,
+    log: opts.log ?? silent,
     fetch: (async (url: string) => {
       const op = url.endsWith('/verify') ? 'verify' : 'settle';
       fac.calls.push(op);
@@ -132,10 +153,11 @@ export async function makeGateway(opts: HarnessOptions = {}) {
     publicUrl,
     timeoutMs: opts.timeoutMs,
     pollIntervalMs: opts.pollIntervalMs,
+    log: opts.log ?? silent,
   });
-  const caller = new AgentCaller({ agentDns, identity, store, payments, tasks, apiKeys, defaultMaxPaymentUsd: '0.10', pollIntervalMs: 20, timeoutMs: opts.callerTimeoutMs ?? 3000 });
+  const caller = new AgentCaller({ agentDns, identity, store, payments, tasks, apiKeys, defaultMaxPaymentUsd: '0.10', pollIntervalMs: 20, timeoutMs: opts.callerTimeoutMs ?? 3000, log: opts.log ?? silent });
 
-  const airnode = opts.airnodeFetch ? new AirnodeClient({ config: DEFAULT_AIRNODE_CONFIG, identity, store, payments, apiKeys, fetch: opts.airnodeFetch }) : undefined;
+  const airnode = opts.airnodeFetch ? new AirnodeClient({ config: DEFAULT_AIRNODE_CONFIG, identity, store, payments, apiKeys, fetch: opts.airnodeFetch, log: opts.log ?? silent }) : undefined;
   const limiter = opts.rateLimit ? new RateLimiter(opts.rateLimit) : undefined;
   const cards = new AgentCardService({ listings, identity, payments, publicUrl, registryUrl: dns.url, defaultPriceUsd: opts.price });
   const app = createApp({
@@ -173,6 +195,7 @@ export async function makeGateway(opts: HarnessOptions = {}) {
     beats,
     n8n,
     fac,
+    log: opts.log ?? silent,
     payments,
     a2a,
     caller,

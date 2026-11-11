@@ -51,13 +51,16 @@ function queryInt(raw: unknown, name: string, fallback: number, min: number, max
   return n;
 }
 
+/** AgentDNS rejects registration with 400 "summary must be 200 characters or less". */
+export const SUMMARY_MAX = 200;
+
 /** PATCH body: any of name, summary, tags, workflowId (null clears it) and priceUsd (null = Gateway default). */
 export function parseListingUpdate(raw: unknown): ListingUpdate {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ApiError('BAD_REQUEST', 'Expected a JSON object');
   const body = raw as Record<string, unknown>;
   const out: ListingUpdate = {};
   if ('name' in body) out.name = str(body, 'name', 100) as string;
-  if ('summary' in body) out.summary = str(body, 'summary', 300) as string;
+  if ('summary' in body) out.summary = str(body, 'summary', SUMMARY_MAX) as string;
   if ('tags' in body) out.tags = parseTags(body.tags);
   if ('workflowId' in body) out.workflowId = body.workflowId === null ? null : (str(body, 'workflowId', 100) as string);
   if ('priceUsd' in body) out.priceUsd = parsePrice(body.priceUsd);
@@ -93,7 +96,7 @@ export function parseNewListing(raw: unknown): NewListing {
   if (price === null) throw new ApiError('BAD_REQUEST', 'priceUsd must be a USD amount');
   return {
     name: str(body, 'name', 100) as string,
-    summary: str(body, 'summary', 300) as string,
+    summary: str(body, 'summary', SUMMARY_MAX) as string,
     category: str(body, 'category', 50) as string,
     tags,
     ...(workflowId ? { workflowId } : {}),

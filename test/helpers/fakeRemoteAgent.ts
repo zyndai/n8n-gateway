@@ -22,6 +22,7 @@ export class FakeRemoteAgent {
   readonly payments = new PaymentProcessor({
     config: loadConfig({}).x402,
     fetch: (async () => Response.json({ isValid: true, success: true, transaction: '0xremote' })) as unknown as typeof fetch,
+    log: { info: () => {}, warn: () => {}, error: () => {} },
   });
   readonly payTo = this.payments.evmAddress(Uint8Array.from({ length: 32 }, (_, i) => i + 200));
   requests: { method: string; auth: boolean; paid: boolean; params: unknown }[] = [];

@@ -13,6 +13,7 @@ import type { X402Config } from '../config.js';
 import { ApiError } from '../errors.js';
 import { fromHex, hex, isAddress, privateKeyToAddress, recoverSigner, signDigest, transferAuthorizationDigest } from './evm.js';
 import { atomicToMicroUsd, microUsdToAtomic, parseUsd } from './money.js';
+import { logPayment, nonceHead, usd, type PaymentLogger } from './paymentLog.js';
 
 export type HeaderBag = Record<string, string | string[] | undefined>;
 
@@ -93,21 +94,40 @@ function bigint(v: string, what: string): bigint {
   return BigInt(v);
 }
 
+/** Correlation ids that only the caller knows; they end up on the payment log lines. */
+export interface PaymentContext {
+  jobId?: string;
+  listingId?: string;
+}
+
+/** What a failed `verifyX402` knows about the proof, for the log line. */
+interface Seen {
+  payer?: string;
+  nonce?: string;
+  /** Facilitator HTTP status and free-text explanation, when it was the one that said no. */
+  status?: number;
+  detail?: string;
+}
+
 export interface PaymentProcessorDeps {
   config: X402Config;
   fetch?: typeof fetch;
   now?: () => number;
+  /** Payment log lines (one per event). Defaults to `console`. */
+  log?: PaymentLogger;
 }
 
 export class PaymentProcessor {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
+  private readonly log: PaymentLogger;
   /** EIP-3009 nonces already accepted by this process -> expiry (ms). Stops a proof being reused while a job runs. */
   private readonly usedNonces = new Map<string, number>();
 
   constructor(private readonly deps: PaymentProcessorDeps) {
     this.fetchImpl = deps.fetch ?? fetch;
     this.now = deps.now ?? Date.now;
+    this.log = deps.log ?? console;
   }
 
   // --- keys ----------------------------------------------------------------------------------
@@ -158,11 +178,40 @@ export class PaymentProcessor {
    * `PAYMENT_FAILED` (402) for an invalid proof and `GATEWAY_UNAVAILABLE` when the facilitator
    * cannot be reached.
    */
-  async verifyX402(headers: HeaderBag, requirements: PaymentRequirements): Promise<VerifiedPayment> {
+  async verifyX402(headers: HeaderBag, requirements: PaymentRequirements, ctx: PaymentContext = {}): Promise<VerifiedPayment> {
+    const seen: Seen = {};
+    try {
+      return await this.verifyChecked(headers, requirements, ctx, seen);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'PAYMENT_FAILED') {
+        const d = isObj(err.details) ? err.details : {};
+        const reason = str(d.reason) ?? err.message;
+        // An unpaid first request is the normal x402 challenge, not something to diagnose.
+        if (reason !== 'missing_payment') {
+          logPayment(this.log, 'warn', 'payment verify rejected', {
+            reason,
+            detail: seen.detail,
+            status: seen.status ?? (typeof d.status === 'number' ? d.status : undefined),
+            payer: seen.payer,
+            payTo: requirements.payTo,
+            amountUsd: this.atomicUsd(requirements.amount),
+            network: requirements.network,
+            nonce: nonceHead(seen.nonce),
+            listing: ctx.listingId,
+          });
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async verifyChecked(headers: HeaderBag, requirements: PaymentRequirements, ctx: PaymentContext, seen: Seen): Promise<VerifiedPayment> {
     const raw = first(headers, ...SIGNATURE_HEADERS);
     if (!raw) throw new ApiError('PAYMENT_FAILED', 'Payment required', { reason: 'missing_payment' });
     const payload = this.decodePayload(raw);
     const { authorization: a, signature } = payload.payload;
+    seen.payer = a.from;
+    seen.nonce = a.nonce;
 
     const acc = payload.accepted;
     if (acc.scheme !== requirements.scheme || acc.network !== requirements.network || !sameAddr(acc.asset, requirements.asset) || !sameAddr(acc.payTo, requirements.payTo) || acc.amount !== requirements.amount) {
@@ -187,8 +236,12 @@ export class PaymentProcessor {
 
     this.claimNonce(a.nonce, Number(validBefore) * 1000);
     try {
-      const res = await this.facilitator<{ isValid?: boolean; invalidReason?: string }>('verify', payload, requirements);
-      if (!res.isValid) throw new ApiError('PAYMENT_FAILED', 'Payment rejected by the facilitator', { reason: res.invalidReason ?? 'invalid' });
+      const { body: res, status } = await this.facilitator<{ isValid?: boolean; invalidReason?: string; invalidMessage?: string }>('verify', payload, requirements, ctx);
+      if (!res.isValid) {
+        seen.status = status;
+        seen.detail = res.invalidMessage;
+        throw new ApiError('PAYMENT_FAILED', 'Payment rejected by the facilitator', { reason: res.invalidReason ?? 'invalid' });
+      }
     } catch (err) {
       this.usedNonces.delete(a.nonce.toLowerCase());
       throw err;
@@ -198,9 +251,26 @@ export class PaymentProcessor {
   }
 
   /** Submit a verified payment on chain via the facilitator. Call once the job has succeeded. */
-  async settle(verified: VerifiedPayment): Promise<SettledPayment> {
-    const res = await this.facilitator<{ success?: boolean; transaction?: string; payer?: string; errorReason?: string }>('settle', verified.paymentPayload, verified.requirements);
-    if (!res.success || !res.transaction) throw new ApiError('PAYMENT_FAILED', 'Payment settlement failed', { reason: res.errorReason ?? 'settle_failed' });
+  async settle(verified: VerifiedPayment, ctx: PaymentContext = {}): Promise<SettledPayment> {
+    const line = { payer: verified.payer, amountUsd: usd(verified.amountMicroUsd), job: ctx.jobId, listing: ctx.listingId };
+    let res: { success?: boolean; transaction?: string; payer?: string; errorReason?: string; errorMessage?: string };
+    let status: number;
+    try {
+      ({ body: res, status } = await this.facilitator<typeof res>('settle', verified.paymentPayload, verified.requirements, ctx));
+    } catch (err) {
+      // An outage was already logged by facilitator(); a 4xx the facilitator did not explain is logged here.
+      if (err instanceof ApiError && err.code === 'PAYMENT_FAILED') {
+        const d = isObj(err.details) ? err.details : {};
+        logPayment(this.log, 'error', 'payment settle failed', { reason: str(d.reason) ?? err.message, ...line, status: typeof d.status === 'number' ? d.status : undefined, network: verified.requirements.network });
+      }
+      throw err;
+    }
+    if (!res.success || !res.transaction) {
+      const reason = res.errorReason ?? 'settle_failed';
+      logPayment(this.log, 'error', 'payment settle failed', { reason, detail: res.errorMessage, ...line, status, network: verified.requirements.network });
+      throw new ApiError('PAYMENT_FAILED', 'Payment settlement failed', { reason });
+    }
+    logPayment(this.log, 'info', 'payment settled', { tx: res.transaction, ...line, network: verified.requirements.network });
     return { transaction: res.transaction, payer: res.payer ?? verified.payer };
   }
 
@@ -342,7 +412,28 @@ export class PaymentProcessor {
     this.usedNonces.set(key, expiresAtMs);
   }
 
-  private async facilitator<T>(op: 'verify' | 'settle', paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements): Promise<T> {
+  private atomicUsd(atomic: string): string | undefined {
+    try {
+      return usd(atomicToMicroUsd(BigInt(atomic), this.deps.config.assetDecimals));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The facilitator is down or answered something unusable: one error line, then the caller's error. */
+  private outage(op: string, ctx: PaymentContext, paymentPayload: PaymentPayload, requirements: PaymentRequirements, why: { status?: number; reason?: string }): void {
+    logPayment(this.log, 'error', 'payment facilitator unavailable', {
+      op,
+      status: why.status,
+      reason: why.reason,
+      payer: paymentPayload.payload.authorization.from,
+      amountUsd: this.atomicUsd(requirements.amount),
+      job: ctx.jobId,
+      listing: ctx.listingId,
+    });
+  }
+
+  private async facilitator<T>(op: 'verify' | 'settle', paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements, ctx: PaymentContext): Promise<{ body: T; status: number }> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.deps.config.facilitatorUrl}/${op}`, {
@@ -352,16 +443,24 @@ export class PaymentProcessor {
         signal: AbortSignal.timeout(FACILITATOR_TIMEOUT_MS),
       });
     } catch (err) {
+      this.outage(op, ctx, paymentPayload, paymentRequirements, { reason: (err as Error).message });
       throw new ApiError('GATEWAY_UNAVAILABLE', 'Payment facilitator unreachable', { reason: (err as Error).message });
     }
     const data = (await res.json().catch(() => undefined)) as T | undefined;
     // The facilitator answers 4xx with a structured body for an invalid payment; surface it as a payment failure.
     if (!res.ok) {
-      if (res.status >= 500) throw new ApiError('GATEWAY_UNAVAILABLE', 'Payment facilitator error', { status: res.status });
-      if (isObj(data)) return data as T;
+      if (res.status >= 500) {
+        const why = isObj(data) ? (str(data.errorReason) ?? str(data.invalidReason) ?? str(data.error)) : undefined;
+        this.outage(op, ctx, paymentPayload, paymentRequirements, { status: res.status, reason: why });
+        throw new ApiError('GATEWAY_UNAVAILABLE', 'Payment facilitator error', { status: res.status });
+      }
+      if (isObj(data)) return { body: data as T, status: res.status };
       throw new ApiError('PAYMENT_FAILED', 'Payment rejected by the facilitator', { status: res.status });
     }
-    if (!isObj(data)) throw new ApiError('GATEWAY_UNAVAILABLE', 'Payment facilitator returned an unreadable response');
-    return data as T;
+    if (!isObj(data)) {
+      this.outage(op, ctx, paymentPayload, paymentRequirements, { status: res.status, reason: 'unreadable response' });
+      throw new ApiError('GATEWAY_UNAVAILABLE', 'Payment facilitator returned an unreadable response');
+    }
+    return { body: data as T, status: res.status };
   }
 }

@@ -13,6 +13,7 @@
 // The payer is the developer wallet by default, or the wallet of one of the developer's listings
 // (`payFromListingId`), so an agent can spend what it earns.
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { randomUUID } from 'node:crypto';
 import { ApiError } from '../errors.js';
 import type { AuthedApiKey } from '../middleware/apiKeyAuth.js';
 import type { ApiKeyStoreLike } from './ApiKeyStore.js';
@@ -21,6 +22,7 @@ import type { IdentityService } from './IdentityService.js';
 import type { ListingStoreLike } from './ListingStore.js';
 import { atomicToMicroUsd, formatUsd, parseUsd } from './money.js';
 import type { PaymentProcessor, PaymentRequirements } from './PaymentProcessor.js';
+import { logPayment, usd, type PaymentLogger } from './paymentLog.js';
 
 export interface AirnodeConfig {
   /** Hostnames a listing URL may use. Default: AirnodeHub's `airnode-<name>.fly.dev`. */
@@ -57,7 +59,12 @@ export interface AirnodeClientDeps {
   apiKeys: Pick<ApiKeyStoreLike, 'reserveSpend' | 'refundSpend'>;
   fetch?: typeof fetch;
   now?: () => number;
+  /** Payment log lines (one per event). Defaults to `console`. */
+  log?: PaymentLogger;
 }
+
+/** Who pays whom, repeated on every payment line of one call. */
+type Who = Record<string, string | undefined>;
 
 export interface Attestation {
   airnode: string;
@@ -216,11 +223,13 @@ function headersOf(h: Headers): Record<string, string> {
 export class AirnodeClient {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
+  private readonly log: PaymentLogger;
   private readonly signers = new Map<string, { address: string; expires: number }>();
 
   constructor(private readonly deps: AirnodeClientDeps) {
     this.fetchImpl = deps.fetch ?? fetch;
     this.now = deps.now ?? Date.now;
+    this.log = deps.log ?? console;
   }
 
   /** Canonical listing URL (`https://host/`), or BAD_REQUEST. Only allow-listed AirnodeHub hosts. */
@@ -247,6 +256,9 @@ export class AirnodeClient {
     const payFrom = req.payFromListingId === undefined || req.payFromListingId === null || req.payFromListingId === '' ? undefined : req.payFromListingId;
     if (payFrom !== undefined && typeof payFrom !== 'string') throw new ApiError('BAD_REQUEST', 'payFromListingId must be a string');
 
+    // `call` ties the lines of one call together: an Airnode call has no task id.
+    const who: Who = { target: url, op: operation, wallet: payFrom ? `listing:${payFrom}` : 'developer', listing: payFrom, call: randomUUID().slice(0, 8), dev: key.developerId };
+
     // Fetch the signer first: a listing we cannot read is a listing we cannot verify, so do not pay it.
     const expectedSigner = await this.signerOf(url);
     const body = JSON.stringify({ operation, parameters });
@@ -255,12 +267,14 @@ export class AirnodeClient {
 
     if (reply.status === 402) {
       const requirements = this.deps.payments.parsePaymentRequired(headersOf(reply.headers), reply.json);
-      this.checkAsset(requirements);
+      this.checkAsset(requirements, who);
       const micro = atomicToMicroUsd(BigInt(requirements.amount), this.deps.config.assetDecimals);
       if (micro > maxMicro) {
+        logPayment(this.log, 'warn', 'payment cap refused', { cap: 'maxPaymentUsd', requiredUsd: usd(micro), maxPaymentUsd: usd(maxMicro), ...who });
         throw new ApiError('PAYMENT_CAP', `${operation} costs $${formatUsd(micro)}, above maxPaymentUsd $${formatUsd(maxMicro)}`, { requiredUsd: formatUsd(micro), maxPaymentUsd: formatUsd(maxMicro) });
       }
       if (!(await this.deps.apiKeys.reserveSpend(key.id, micro))) {
+        logPayment(this.log, 'warn', 'payment cap refused', { cap: 'keySpend', requiredUsd: usd(micro), key: key.id, ...who });
         throw new ApiError('PAYMENT_CAP', 'This payment would exceed the API key spend cap', { requiredUsd: formatUsd(micro) });
       }
       let signed;
@@ -277,13 +291,15 @@ export class AirnodeClient {
       if (reply.status !== 200 && !transaction) {
         // The Airnode settles only after a successful call, so a refused or failed call cost nothing.
         await this.deps.apiKeys.refundSpend(key.id, micro);
+        logPayment(this.log, 'warn', reply.status === 402 ? 'payment rejected by airnode' : 'payment not taken by airnode', { reason: this.errorText(reply.json), status: reply.status, amountUsd: usd(micro), payer: signed.payer, ...who });
         if (reply.status === 402) throw new ApiError('PAYMENT_FAILED', 'The Airnode rejected the payment', { reason: this.errorText(reply.json) });
       } else {
         payment = { amountUsd: formatUsd(micro), transaction, payer: signed.payer };
+        logPayment(this.log, 'info', 'payment paid', { amountUsd: usd(micro), tx: transaction ?? 'none', payer: signed.payer, ...who });
       }
     }
 
-    if (reply.status !== 200) this.fail(reply.status, reply.json, operation);
+    if (reply.status !== 200) this.fail(reply.status, reply.json, operation, who);
     const attestation = toAttestation(reply.json);
     if (!attestation) throw new ApiError('GATEWAY_UNAVAILABLE', 'The Airnode returned a response without a readable attestation');
     const verification = verifyAttestation(attestation, operation, parameters, expectedSigner);
@@ -324,9 +340,10 @@ export class AirnodeClient {
     return raw;
   }
 
-  private checkAsset(r: PaymentRequirements): void {
+  private checkAsset(r: PaymentRequirements, who: Who): void {
     const c = this.deps.config;
     if (r.network !== c.network || r.asset.toLowerCase() !== c.asset.toLowerCase()) {
+      logPayment(this.log, 'warn', 'payment refused', { reason: 'unsupported_asset', network: r.network, asset: r.asset, ...who });
       throw new ApiError('PAYMENT_FAILED', 'The Airnode asks for a token this Gateway will not pay with', { network: r.network, asset: r.asset });
     }
   }
@@ -395,11 +412,14 @@ export class AirnodeClient {
     return undefined;
   }
 
-  private fail(status: number, json: unknown, operation: string): never {
+  private fail(status: number, json: unknown, operation: string, who: Who): never {
     const detail = this.errorText(json);
     if (status === 400) throw new ApiError('BAD_REQUEST', `The Airnode rejected the parameters for ${operation}${detail ? `: ${detail}` : ''}`);
     if (status === 404) throw new ApiError('NOT_FOUND', `The Airnode has no operation ${operation}`);
-    if (status === 402) throw new ApiError('PAYMENT_FAILED', 'The Airnode still asks for payment', { reason: detail });
+    if (status === 402) {
+      logPayment(this.log, 'warn', 'airnode still asks for payment', { reason: detail, status, ...who });
+      throw new ApiError('PAYMENT_FAILED', 'The Airnode still asks for payment', { reason: detail });
+    }
     throw new ApiError('GATEWAY_UNAVAILABLE', `The Airnode answered HTTP ${status}${detail ? `: ${detail}` : ''}`, { status });
   }
 }
