@@ -45,4 +45,4 @@
 - [ ] Setup guide published: Dashboard → API key → `npm install` → add credential → build workflow
 - [ ] n8n Creator Portal submission accepted or timeline confirmed
 - [ ] Rollback plan documented: Gateway reverts independently of dashboard
-- [ ] Dashboard "Get n8n Nodes" link updated from old GitHub repo to npm install command
+- [x] Dashboard "Get n8n Nodes" link updated from old GitHub repo to npm install command
