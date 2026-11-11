@@ -18,6 +18,7 @@ import type { Ed25519Keypair, IdentityService } from './IdentityService.js';
 import type { ListingStoreLike } from './ListingStore.js';
 import { atomicToMicroUsd, formatUsd, parseUsd } from './money.js';
 import type { PaymentProcessor } from './PaymentProcessor.js';
+import { logPayment, reasonFromBody, usd, type PaymentLogger } from './paymentLog.js';
 import type { TaskRow, TaskStoreLike } from './TaskStore.js';
 import { signZyndAuth, type A2AMessage } from './zyndAuth.js';
 
@@ -36,6 +37,8 @@ export interface AgentCallerDeps {
   fetch?: typeof fetch;
   pollIntervalMs?: number;
   timeoutMs?: number;
+  /** Payment log lines (one per event). Defaults to `console`. */
+  log?: PaymentLogger;
 }
 
 export interface OutboundResult {
@@ -83,9 +86,11 @@ function outboundMessage(input: unknown): A2AMessage {
 
 export class AgentCaller {
   private readonly fetchImpl: typeof fetch;
+  private readonly log: PaymentLogger;
 
   constructor(private readonly deps: AgentCallerDeps) {
     this.fetchImpl = deps.fetch ?? fetch;
+    this.log = deps.log ?? console;
   }
 
   /** M2.14. Returns once the remote task is terminal; throws on payment, transport or timeout failures. */
@@ -105,6 +110,13 @@ export class AgentCaller {
 
     const task = await this.deps.tasks.create({ developerId: key.developerId, apiKeyId: key.id, direction: 'OUTBOUND', input: req.input ?? null });
     const deadline = Date.now() + (this.deps.timeoutMs ?? 300_000);
+    // What every payment line for this call says about who is paying whom.
+    const who = {
+      target: `agent:${targetEntityId}`,
+      wallet: payFrom ? `listing:${String(req.payFromListingId)}` : 'developer',
+      listing: payFrom ? String(req.payFromListingId) : undefined,
+      task: task.id,
+    };
     let reserved = 0n;
     let paymentTxn: string | null = null;
     let paymentUsd: string | null = null;
@@ -126,10 +138,12 @@ export class AgentCaller {
         const decimals = Number(isObj(requirements.extra) && typeof requirements.extra.decimals === 'number' ? requirements.extra.decimals : 6);
         const micro = atomicToMicroUsd(BigInt(requirements.amount), decimals);
         if (micro > maxMicro) {
+          logPayment(this.log, 'warn', 'payment cap refused', { cap: 'maxPaymentUsd', requiredUsd: usd(micro), maxPaymentUsd: usd(maxMicro), ...who });
           throw new ApiError('PAYMENT_CAP', `Agent asks for $${formatUsd(micro)}, above maxPaymentUsd $${formatUsd(maxMicro)}`, { requiredUsd: formatUsd(micro), maxPaymentUsd: formatUsd(maxMicro) });
         }
         // M2.16: reserve before signing. The conditional UPDATE is the only place the cap is checked.
         if (!(await this.deps.apiKeys.reserveSpend(key.id, micro))) {
+          logPayment(this.log, 'warn', 'payment cap refused', { cap: 'keySpend', requiredUsd: usd(micro), key: key.id, ...who });
           throw new ApiError('PAYMENT_CAP', 'This payment would exceed the API key spend cap', { requiredUsd: formatUsd(micro) });
         }
         reserved = micro;
@@ -150,10 +164,19 @@ export class AgentCaller {
         // The agent refused the paid request and reported no settlement: nothing was charged.
         const refused = reply.status >= 400 || (isObj(reply.json) && isObj(reply.json.error));
         if (refused && !paymentTxn) {
+          logPayment(this.log, 'warn', reply.status === 402 ? 'payment rejected by agent' : 'payment not taken by agent', {
+            reason: reasonFromBody(reply.json),
+            status: reply.status,
+            amountUsd: usd(micro),
+            payer: paid.payer,
+            ...who,
+          });
           await this.deps.apiKeys.refundSpend(key.id, reserved);
           reserved = 0n;
           paymentUsd = null;
           if (reply.status === 402) throw new ApiError('PAYMENT_FAILED', 'Agent rejected the payment');
+        } else {
+          logPayment(this.log, 'info', 'payment paid', { amountUsd: usd(micro), tx: paymentTxn ?? 'none', payer: paid.payer, ...who });
         }
       }
 

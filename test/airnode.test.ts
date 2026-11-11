@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { airnodeRequestHash, verifyAttestation, airnodeSignedDigest, type Attestation } from '../src/services/AirnodeClient.js';
 import { fromHex, privateKeyToAddress, recoverSigner, signDigest, transferAuthorizationDigest } from '../src/services/evm.js';
 import { keypairFromSeed } from '../src/services/IdentityService.js';
-import { API_KEY, DEV, devSeed, makeGateway, type Gateway } from './helpers/harness.js';
+import { API_KEY, captureLog, DEV, devSeed, makeGateway, type Gateway } from './helpers/harness.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/airnode-briefpixel.json', import.meta.url), 'utf8')) as {
   listingSigner: string;
@@ -110,9 +110,9 @@ afterEach(async () => {
   await gw?.close();
 });
 
-async function setup(o: FakeOpts = {}) {
+async function setup(o: FakeOpts = {}, extra: { log?: ReturnType<typeof captureLog>; wrap?: (f: typeof fetch) => typeof fetch } = {}) {
   const airnode = fakeAirnode(o);
-  gw = await makeGateway({ airnodeFetch: airnode.fetchImpl });
+  gw = await makeGateway({ airnodeFetch: extra.wrap ? extra.wrap(airnode.fetchImpl) : airnode.fetchImpl, ...(extra.log ? { log: extra.log } : {}) });
   const keyId = [...gw.apiKeys.rows.values()].find((r) => r.developerId === DEV)!.id;
   const call = (body: Record<string, unknown>) => gw.post('/n8n/v1/airnode/call', { listingUrl: URL_OK, operation: 'getThing', parameters: { id: 'x1' }, ...body }, API_KEY);
   return { airnode, call, keyId };
@@ -210,5 +210,83 @@ describe('POST /n8n/v1/airnode/verify', () => {
     expect(ok.body).toMatchObject({ verified: true, listingUrl: URL_OK });
     const bad = await gw.post('/n8n/v1/airnode/verify', { ...body, attestation: { ...first.body.attestation, data: '{"ok":false}' } }, API_KEY);
     expect(bad.body.verified).toBe(false);
+  });
+});
+
+describe('Airnode payment log lines', () => {
+  const AIRNODE = 'https://airnode-test.fly.dev/';
+
+  it('paid call: one info line with target, operation, amount, tx, payer and wallet', async () => {
+    const log = captureLog();
+    const { call, keyId } = await setup({ price: '10000' }, { log });
+    const res = await call({});
+    expect(res.status).toBe(200);
+    expect(log.entries.map((e) => e.level)).toEqual(['info']);
+    const devAddress = gw.payments.evmAddress(keypairFromSeed(devSeed).privateKey);
+    expect(log.lines[0]).toMatch(new RegExp(`^payment paid amountUsd=0.01 tx=0xairnodetx payer=${devAddress} target=${AIRNODE} op=getThing wallet=developer call=[0-9a-f]{8} dev=${DEV}$`));
+    expect(log.lines.join('\n')).not.toContain(API_KEY);
+    expect(gw.apiKeys.spent(keyId)).toBe(10_000n);
+  });
+
+  it('payFromListingId: names the listing wallet', async () => {
+    const log = captureLog();
+    const { call } = await setup({ price: '10000' }, { log });
+    await call({ payFromListingId: gw.listing.id });
+    expect(log.lines[0]).toContain(`wallet=listing:${gw.listing.id} listing=${gw.listing.id}`);
+  });
+
+  it('a free operation logs nothing', async () => {
+    const log = captureLog();
+    const { call } = await setup({}, { log });
+    expect((await call({})).status).toBe(200);
+    expect(log.entries).toEqual([]);
+  });
+
+  it('a price above maxPaymentUsd is logged with required vs ceiling', async () => {
+    const log = captureLog();
+    const { call } = await setup({ price: '50000' }, { log });
+    const res = await call({ maxPaymentUsd: '0.01' });
+    expect(res.body.code).toBe('PAYMENT_CAP'); // unchanged
+    expect(log.entries[0]?.level).toBe('warn');
+    expect(log.lines[0]).toMatch(/^payment cap refused cap=maxPaymentUsd requiredUsd=0.05 maxPaymentUsd=0.01 target=\S+ op=getThing wallet=developer call=[0-9a-f]{8} dev=/);
+  });
+
+  it('the key spend cap is logged', async () => {
+    const log = captureLog();
+    const { call, keyId } = await setup({ price: '50000' }, { log });
+    gw.apiKeys.rows.get(keyId)!.spendCapUsd = '0.01';
+    const res = await call({ maxPaymentUsd: '0.10' });
+    expect(res.body.code).toBe('PAYMENT_CAP');
+    expect(log.lines[0]).toContain(`payment cap refused cap=keySpend requiredUsd=0.05 key=${keyId}`);
+  });
+
+  it('a token the Gateway will not pay with is logged as refused', async () => {
+    const log = captureLog();
+    const { call } = await setup({ price: '10000', asset: '0x036CbD53842c5426634e7929541eC2318f3dCF7e' }, { log });
+    const res = await call({});
+    expect(res.body.code).toBe('PAYMENT_FAILED');
+    expect(log.lines[0]).toContain('payment refused reason=unsupported_asset network=eip155:84532 asset=0x036CbD53842c5426634e7929541eC2318f3dCF7e');
+  });
+
+  it('an Airnode that rejects the payment: logs its reason, charges nothing, error unchanged', async () => {
+    const log = captureLog();
+    const { call, keyId } = await setup(
+      { price: '10000' },
+      { log, wrap: (f) => (async (url: string, init?: RequestInit) => (new Headers(init?.headers).get('PAYMENT-SIGNATURE') ? Response.json({ error: 'insufficient funds' }, { status: 402 }) : f(url, init))) as unknown as typeof fetch },
+    );
+    const res = await call({});
+    expect(res.status).toBe(402);
+    expect(res.body).toMatchObject({ code: 'PAYMENT_FAILED', error: 'The Airnode rejected the payment', details: { reason: 'insufficient funds' } });
+    expect(log.entries).toHaveLength(1);
+    expect(log.entries[0]?.level).toBe('warn');
+    expect(log.lines[0]).toMatch(/^payment rejected by airnode reason="insufficient funds" status=402 amountUsd=0.01 payer=0x\w{40} target=\S+ op=getThing/);
+    expect(gw.apiKeys.spent(keyId)).toBe(0n);
+  });
+
+  it('an Airnode that fails the paid call with a 5xx: logged as not taken', async () => {
+    const log = captureLog();
+    const { call } = await setup({ price: '10000' }, { log, wrap: (f) => (async (url: string, init?: RequestInit) => (new Headers(init?.headers).get('PAYMENT-SIGNATURE') ? Response.json({ error: 'upstream exploded' }, { status: 500 }) : f(url, init))) as unknown as typeof fetch });
+    expect((await call({})).status).toBe(502);
+    expect(log.lines[0]).toContain('payment not taken by airnode reason="upstream exploded" status=500');
   });
 });

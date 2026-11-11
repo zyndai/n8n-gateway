@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../src/errors.js';
 import { PaymentProofVault, PaymentRecovery, type PaymentRecoveryDeps } from '../src/services/PaymentRecovery.js';
 import type { PaymentRequirements, VerifiedPayment } from '../src/services/PaymentProcessor.js';
-import { DEV, makeGateway, masterKey, type Gateway } from './helpers/harness.js';
+import { captureLog, DEV, makeGateway, masterKey, type Gateway } from './helpers/harness.js';
 
 let gw: Gateway;
 afterEach(async () => {
@@ -35,7 +35,7 @@ async function orphan(status: 'COMPLETED' | 'FAILED' | 'CANCELED' | 'PROCESSING'
 
 const later = (ms: number) => () => Date.now() + ms;
 function recovery(over: Partial<PaymentRecoveryDeps> = {}) {
-  return new PaymentRecovery({ tasks: gw.tasks, payments: gw.payments, vault, now: later(60_000), ...over });
+  return new PaymentRecovery({ tasks: gw.tasks, payments: gw.payments, vault, now: later(60_000), log: gw.log, ...over });
 }
 const settles = () => gw.fac.calls.filter((c) => c === 'settle').length;
 
@@ -189,5 +189,48 @@ describe('PaymentRecovery', () => {
     expect(await recovery({ now: later(60_000) }).run()).toEqual({ settled: 0, released: 0, failed: 0 });
     expect(settles()).toBe(0);
     expect(await recovery({ now: later(3 * 60_000), leaseMs: 120_000 }).run()).toEqual({ settled: 1, released: 0, failed: 0 });
+  });
+});
+
+describe('PaymentRecovery log lines', () => {
+  it('a sweep that settles logs the transaction (with the task and listing) and a one-line result', async () => {
+    const log = captureLog();
+    gw = await makeGateway({ price: '0.05', log });
+    const v = await verified();
+    const id = await orphan('COMPLETED', v);
+    await recovery({ log }).run();
+    expect(log.lines).toEqual([
+      `payment settled tx=0xsettled payer=${v.payer} amountUsd=0.05 job=${id} listing=${gw.listing.id} network=eip155:84532`,
+      'payment recovery sweep settled=1 released=0 failed=0',
+    ]);
+    expect(log.entries.map((e) => e.level)).toEqual(['info', 'info']);
+  });
+
+  it('a refused settle logs the facilitator reason, the task that was given up on, and the sweep as a warning', async () => {
+    const log = captureLog();
+    gw = await makeGateway({ price: '0.05', log });
+    gw.fac.settle = { success: false, errorReason: 'nonce_used' };
+    const id = await orphan('COMPLETED');
+    await recovery({ log }).run();
+    expect(log.of('payment settle failed')[0]?.line).toMatch(new RegExp(`^payment settle failed reason=nonce_used payer=0x\\w{40} amountUsd=0.05 job=${id} listing=${gw.listing.id} `));
+    expect(log.of('payment recovery failed')[0]).toMatchObject({ level: 'error', line: `payment recovery failed job=${id} listing=${gw.listing.id} cause=PAYMENT_FAILED reason="Payment settlement failed"` });
+    expect(log.of('payment recovery sweep')[0]).toEqual({ level: 'warn', line: 'payment recovery sweep settled=0 released=0 failed=1' });
+  });
+
+  it('an authorization that ran out before the sweep got to it is logged as lost', async () => {
+    const log = captureLog();
+    gw = await makeGateway({ price: '0.05', log });
+    const v = await verified();
+    const id = await orphan('COMPLETED', v);
+    await recovery({ log, now: later(3_600_000) }).run();
+    expect(log.of('payment proof dropped')[0]).toEqual({ level: 'warn', line: `payment proof dropped reason=authorization_expired payer=${v.payer} amountUsd=0.05 job=${id} listing=${gw.listing.id}` });
+    expect(log.of('payment recovery sweep')[0]?.line).toBe('payment recovery sweep settled=0 released=1 failed=0');
+  });
+
+  it('an idle sweep is silent', async () => {
+    const log = captureLog();
+    gw = await makeGateway({ price: '0.05', log });
+    await recovery({ log }).run();
+    expect(log.entries).toEqual([]);
   });
 });
