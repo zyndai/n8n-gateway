@@ -3,6 +3,8 @@
 #   migrate   - applies the Gateway migrations, then exits
 #   gateway   - the Zynd n8n Gateway          http://localhost:8080/health
 #   n8n       - n8n with n8n-nodes-zynd built in   http://localhost:5678
+#   studio    - Zynd Studio (apps/studio)           http://localhost:3100  (starts in preview mode with sample data
+#               until the Supabase, Gateway and n8n settings below are filled in .env)
 # Set the secrets in .env first (see .env.example); compose reads it for the ${...} values below.
 
 name: zynd-n8n
@@ -57,6 +59,9 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       SESSION_JWT_SECRET: ${SESSION_JWT_SECRET:?set SESSION_JWT_SECRET in .env (openssl rand -hex 32)}
       PKI_ENCRYPTION_KEY: ${PKI_ENCRYPTION_KEY:?set PKI_ENCRYPTION_KEY in .env (64 hex chars)}
+      # Zynd Studio (apps/studio). Both optional: unset = POST /internal/v1/provision does not exist.
+      STUDIO_SERVICE_TOKEN: ${STUDIO_SERVICE_TOKEN:-}
+      AGENTDNS_WEBHOOK_SECRET: ${AGENTDNS_WEBHOOK_SECRET:-}
       HEARTBEAT_REQUIRES_WEBHOOK: ${HEARTBEAT_REQUIRES_WEBHOOK:-true}
       X402_FACILITATOR_URL: ${X402_FACILITATOR_URL:-https://x402.org/facilitator}
       X402_NETWORK: ${X402_NETWORK:-eip155:84532}
@@ -107,6 +112,46 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      gateway:
+        condition: service_healthy
+
+  # Zynd Studio: the chat-to-agent app for non-developers (docs/STUDIO_PLAN.md). Nothing here is needed by the
+  # Gateway or n8n. With STUDIO_PREVIEW=1 it shows sample data and needs no other setting.
+  studio:
+    build:
+      context: .
+      target: studio
+    restart: unless-stopped
+    ports:
+      - '${STUDIO_PORT:-3100}:3100'
+    environment:
+      STUDIO_PREVIEW: ${STUDIO_PREVIEW:-1}
+      STUDIO_PUBLIC_URL: ${STUDIO_PUBLIC_URL:-http://localhost:3100}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+      GATEWAY_URL: ${STUDIO_GATEWAY_URL:-http://gateway:8080}
+      # The address n8n puts in each user's Zynd credential (n8n reaches the Gateway on the compose network).
+      N8N_GATEWAY_URL: ${STUDIO_N8N_GATEWAY_URL:-http://gateway:8080}
+      SESSION_JWT_SECRET: ${SESSION_JWT_SECRET:?set SESSION_JWT_SECRET in .env (openssl rand -hex 32)}
+      STUDIO_SERVICE_TOKEN: ${STUDIO_SERVICE_TOKEN:-}
+      N8N_API_URL: ${STUDIO_N8N_API_URL:-http://n8n:5678}
+      N8N_API_KEY: ${N8N_API_KEY:-}
+      N8N_MCP_URL: ${STUDIO_N8N_MCP_URL:-http://n8n:5678/mcp-server/http}
+      N8N_MCP_TOKEN: ${N8N_MCP_TOKEN:-}
+      AGENT_KEY_SPEND_CAP_USD: ${AGENT_KEY_SPEND_CAP_USD:-5}
+      # Agent builder (S2) and agents (S3). Unset = Create agent says "not switched on yet".
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      N8N_OPENAI_CREDENTIAL_ID: ${N8N_OPENAI_CREDENTIAL_ID:-}
+      AGENTDNS_URL: ${AGENTDNS_URL:-}
+      AGENT_MAX_CALL_USD: ${AGENT_MAX_CALL_USD:-}
+      AIRNODE_SOURCES: ${STUDIO_AIRNODE_SOURCES:-}
+      # Starter credit (S2.1). Unset TREASURY_PRIVATE_KEY = agents start without credit.
+      TREASURY_PRIVATE_KEY: ${TREASURY_PRIVATE_KEY:-}
+      STARTER_CREDIT_USD: ${STARTER_CREDIT_USD:-1}
+      STARTER_CREDIT_MAX_AGENTS: ${STARTER_CREDIT_MAX_AGENTS:-3}
+    depends_on:
       gateway:
         condition: service_healthy
 

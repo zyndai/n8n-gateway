@@ -1,0 +1,33 @@
+# Zynd Studio (apps/studio): lint, typecheck, tests and the production build. The Gateway's own workflow (ci.yml) also
+# runs test/studio.setup.test.ts, which drives Studio's setup code against the real Gateway.
+name: Studio CI
+on:
+  pull_request:
+    paths:
+      - 'apps/studio/**'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - '.github/workflows/studio-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/studio/**'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - '.github/workflows/studio-ci.yml'
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # One lock-file at the repository root; only Studio's own dependencies are needed here.
+      - run: npm ci --workspace=zynd-studio
+      - run: npm run lint:studio
+      - run: npm run typecheck:studio
+      - run: npm run test:studio
+      # No secrets at build time: every setting is read when the server starts.
+      - run: npm run build:studio

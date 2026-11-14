@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs ON THE SERVER (invoked by the GitHub Actions deploy workflow, or by hand).
 # Pulls the given ref, builds the images, runs migrations, then replaces the gateway container.
-# Layout: /opt/zynd-n8n-gateway/{src (git checkout), .env}
+# Layout: /opt/zynd-n8n-gateway/{src (git checkout), .env, n8n.env, studio.env (optional)}
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/zynd-n8n-gateway}"
@@ -10,6 +10,44 @@ NAME=zynd-n8n-gateway
 HOST_PORT="${HOST_PORT:-8090}"
 N8N_PORT="${N8N_PORT:-5678}"
 NET=zynd-n8n-net
+STUDIO_NAME=zynd-studio
+STUDIO_PORT="${STUDIO_PORT:-3100}"
+
+# Zynd Studio (apps/studio). Optional and never fatal: the Gateway and n8n are already healthy when this runs,
+# so a problem here is reported and the deploy still succeeds. Skipped until $APP_DIR/studio.env exists
+# (its contents: docs/RUNBOOK.md, "Zynd Studio"). Runs from the repo checkout (cwd = $APP_DIR/src).
+deploy_studio() {
+  if [ ! -f "$APP_DIR/studio.env" ]; then
+    echo "==> studio: skipped ($APP_DIR/studio.env not found)"
+    return 0
+  fi
+  echo "==> studio: building"
+  docker build --target studio -t "$STUDIO_NAME:$SHA" . || return 1
+  local prev
+  prev=$(docker inspect -f '{{.Config.Image}}' "$STUDIO_NAME" 2>/dev/null || true)
+  docker rm -f "$STUDIO_NAME" >/dev/null 2>&1 || true
+  docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
+  run_studio() {
+    docker run -d --name "$STUDIO_NAME" --restart unless-stopped --network "$NET" \
+      --env-file "$APP_DIR/studio.env" -p "127.0.0.1:$STUDIO_PORT:3100" --memory 512m "$1" >/dev/null
+  }
+  run_studio "$STUDIO_NAME:$SHA" || return 1
+  for i in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:$STUDIO_PORT/api/health" >/dev/null 2>&1; then
+      echo "==> studio healthy ($SHA)"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "!! studio health check failed; logs:" >&2
+  docker logs --tail 40 "$STUDIO_NAME" >&2 || true
+  if [ -n "$prev" ]; then
+    echo "!! rolling studio back to $prev" >&2
+    docker rm -f "$STUDIO_NAME" >/dev/null 2>&1 || true
+    run_studio "$prev" || true
+  fi
+  return 1
+}
 
 cd "$APP_DIR/src"
 git fetch --quiet origin
@@ -59,6 +97,7 @@ curl -fsS "http://127.0.0.1:$N8N_PORT/healthz" >/dev/null || { echo "!! n8n unhe
 for i in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:$HOST_PORT/health" >/dev/null 2>&1; then
     echo "==> healthy ($SHA)"
+    deploy_studio || echo "!! studio was not deployed (the Gateway and n8n are fine); see the log above" >&2
     docker image prune -f --filter "until=72h" >/dev/null || true
     exit 0
   fi
