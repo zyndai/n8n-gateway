@@ -19,3 +19,4 @@ CREATE TABLE IF NOT EXISTS "developer_keys" (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "developer_keys_user_id_key" ON "developer_keys"("user_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "developer_keys_developer_id_key" ON "developer_keys"("developer_id");
+CREATE UNIQUE INDEX IF NOT EXISTS "developer_keys_username_key" ON "developer_keys"("username");

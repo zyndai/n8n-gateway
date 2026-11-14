@@ -2,7 +2,7 @@
 // This file is NOT part of drizzle-kit's schema entry (see drizzle.config.ts), so the Gateway
 // never generates or applies migrations for it. Keep the columns in step with the dashboard's
 // Prisma model `DeveloperKey` (dashboard/prisma/schema.prisma, `@@map("developer_keys")`); only
-// declare what the Gateway reads.
+// declare what the Gateway reads or, for POST /internal/v1/provision (Studio), writes.
 //
 // There is no separate `Developer` table: a developer is a row here, identified by `developer_id`
 // (`zns:dev:<hash>`, unique). Gateway tables reference that column.
@@ -21,4 +21,8 @@ export const developerKey = pgTable('developer_keys', {
   privateKeyEnc: text('private_key_enc').notNull(),
   // NOT NULL in the dashboard schema; declared so inserts in tests are valid.
   name: text('name').notNull(),
+  // Unique handle (`ada-x7k2`), set once the developer has claimed one on the registry. Null until then.
+  // The dashboard's setup page is skipped for a developer that already has one.
+  username: text('username'),
+  role: text('role'),
 });

@@ -14,12 +14,14 @@ import { UsdBalanceReader, defaultRpcUrl } from './BalanceReader.js';
 import { Cluster, parsePeers } from './Cluster.js';
 import { HeartbeatCoordinator } from './HeartbeatCoordinator.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
+import { DeveloperStore } from './DeveloperStore.js';
 import { IdentityService } from './IdentityService.js';
 import { ListingService } from './ListingService.js';
 import { ListingStore } from './ListingStore.js';
 import { NonceStore } from './NonceStore.js';
 import { PaymentProcessor } from './PaymentProcessor.js';
 import { PaymentProofVault, PaymentRecovery } from './PaymentRecovery.js';
+import { ProvisionService, type ProvisionedDeveloper } from './ProvisionService.js';
 import { TaskStore } from './TaskStore.js';
 import { WalletService } from './WalletService.js';
 import { WebhookForwarder } from './WebhookForwarder.js';
@@ -45,6 +47,8 @@ export interface Services {
   caller: AgentCaller;
   cards: AgentCardService;
   airnode: AirnodeClient;
+  /** Studio's silent developer setup; undefined unless AGENTDNS_WEBHOOK_SECRET is set. */
+  provisioner: { provision(userId: string, name: string): Promise<ProvisionedDeveloper> } | undefined;
 }
 
 let services: Services | undefined;
@@ -140,7 +144,10 @@ export function getServices(): Services {
   });
   const airnode = new AirnodeClient({ config: config.airnode, identity, store, payments, apiKeys, log: payLog });
   const apiKeySvc = new ApiKeyService({ store: apiKeys, developerExists: (id) => store.developerExists(id) });
-  services = { config, store, identity, heartbeats, cluster, coordinator, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, recovery, a2a, caller, cards, airnode };
+  const provisioner = config.agentDnsWebhookSecret
+    ? new ProvisionService({ directory: new DeveloperStore(db), registry: agentDns, adminSecret: config.agentDnsWebhookSecret, masterKey, log: console })
+    : undefined;
+  services = { config, store, identity, heartbeats, cluster, coordinator, listings, agentDns, apiKeys, apiKeySvc, wallet, tasks, nonces, payments, recovery, a2a, caller, cards, airnode, provisioner };
   return services;
 }
 

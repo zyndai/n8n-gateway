@@ -18,6 +18,13 @@ export interface Config {
   heartbeatRequiresWebhook: boolean;
   /** Accept webhook URLs on loopback / private networks. Default: only outside production. */
   allowPrivateWebhooks: boolean;
+  /**
+   * Bearer token Zynd Studio's server sends to `POST /internal/v1/provision`. Unset (or under 32
+   * characters) = the route is not mounted.
+   */
+  studioServiceToken: string | undefined;
+  /** The registry's admin (webhook) secret, the dashboard's `AGENTDNS_WEBHOOK_SECRET`. Needed to create developers for Studio. */
+  agentDnsWebhookSecret: string | undefined;
   /** M5.2: per-API-key request limit on /n8n/v1/*. */
   rateLimit: { perMinute: number; burst: number };
   /** M5.1: bearer token for `GET /metrics`. Unset = the endpoint does not exist. */
@@ -89,6 +96,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     publicUrl: (env.PUBLIC_URL ?? 'https://gw.zynd.ai').replace(/\/+$/, ''),
     pkiEncryptionKey: env.PKI_ENCRYPTION_KEY,
     sessionJwtSecret: env.SESSION_JWT_SECRET,
+    studioServiceToken: env.STUDIO_SERVICE_TOKEN || undefined,
+    agentDnsWebhookSecret: env.AGENTDNS_WEBHOOK_SECRET || undefined,
     heartbeatRequiresWebhook: bool(env.HEARTBEAT_REQUIRES_WEBHOOK, true),
     allowPrivateWebhooks: bool(env.WEBHOOK_ALLOW_PRIVATE, (env.NODE_ENV ?? 'development') !== 'production'),
     rateLimit: {

@@ -1,9 +1,11 @@
 import express, { type Express } from 'express';
 import { loadConfig, type Config } from './config.js';
+import { ApiError } from './errors.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { createCardRouter, type CardDeps } from './routes/card.js';
 import { createA2aRouter, type A2aDeps } from './routes/a2a.js';
 import { createDashboardRouter, type DashboardDeps } from './routes/dashboard.js';
+import { MIN_SERVICE_TOKEN_LEN, createProvisionRouter, type ProvisionDeps } from './routes/provision.js';
 import { Metrics, metricsHandler } from './observability/metrics.js';
 import { healthRouter } from './routes/health.js';
 import { RateLimiter } from './services/RateLimiter.js';
@@ -12,7 +14,7 @@ import { getServices } from './services/container.js';
 import type { ListingService } from './services/ListingService.js';
 
 export interface AppDeps {
-  config?: Pick<Config, 'sessionJwtSecret'> & Partial<Pick<Config, 'metricsToken' | 'rateLimit'>>;
+  config?: Pick<Config, 'sessionJwtSecret'> & Partial<Pick<Config, 'metricsToken' | 'rateLimit' | 'studioServiceToken'>>;
   /** M5.2: the per-key limiter for /n8n/v1/*. Defaults to one built from `config.rateLimit`. */
   rateLimiter?: RateLimiter;
   /** M5.1: recorded for every request and served at /metrics when a token is configured. */
@@ -22,6 +24,8 @@ export interface AppDeps {
   dashboard?: Partial<Pick<DashboardDeps, 'apiKeys' | 'tasks' | 'wallet'>>;
   /** Per-route-group overrides; each defaults to the real services, resolved per request. */
   n8n?: Partial<N8nDeps>;
+  /** Studio's provisioning route; `provisioner` defaults to the real service (and answers 503 when it is not configured). */
+  provision?: Partial<Pick<ProvisionDeps, 'provisioner'>>;
   a2a?: Partial<A2aDeps>;
   card?: Partial<CardDeps>;
 }
@@ -57,6 +61,24 @@ export function createApp(deps: AppDeps = {}): Express {
     createA2aRouter({ a2a: () => getServices().a2a, nonces: () => getServices().nonces, ...deps.a2a }),
   );
   app.use('/a/:entityId/.well-known/agent-card.json', createCardRouter({ cards: () => getServices().cards, ...deps.card }));
+  // Zynd Studio: authenticated by STUDIO_SERVICE_TOKEN, so it sits before the Session JWT router. Without
+  // a usable token the route does not exist and /internal/v1/provision falls through to the JWT check.
+  if (config.studioServiceToken && config.studioServiceToken.length >= MIN_SERVICE_TOKEN_LEN) {
+    app.use(
+      '/internal/v1/provision',
+      createProvisionRouter({
+        token: config.studioServiceToken,
+        provisioner: () => {
+          const p = getServices().provisioner;
+          if (!p) throw new ApiError('GATEWAY_UNAVAILABLE', 'Studio provisioning is not configured on this Gateway');
+          return p;
+        },
+        ...deps.provision,
+      }),
+    );
+  } else if (config.studioServiceToken) {
+    console.error(`STUDIO_SERVICE_TOKEN is shorter than ${MIN_SERVICE_TOKEN_LEN} characters: /internal/v1/provision is disabled`);
+  }
   app.use(
     '/internal/v1',
     createDashboardRouter({

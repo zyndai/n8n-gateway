@@ -5,6 +5,7 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer } from 'ws';
@@ -32,7 +33,24 @@ export interface FakeEntity {
   lastHeartbeatAt?: number;
 }
 
+export interface FakeHandle {
+  developer_id: string;
+  verified: boolean;
+}
+
 export class FakeAgentDns {
+  /** Bearer secret POST /v1/admin/developers/approve expects (the registry's webhook secret). */
+  adminSecret = 'registry-webhook-secret';
+  /** Handles claimed through POST /v1/handles. */
+  handles = new Map<string, FakeHandle>();
+  approveCalls = 0;
+  claimCalls = 0;
+  /** Set to make POST /v1/admin/developers/approve answer 500 (outage). */
+  failApprove = false;
+  /** Set to make POST /v1/handles answer 500 (outage). */
+  failClaim = false;
+  /** Every developer key the fake issued, by developer id: the plaintext base64 the registry encrypted. */
+  issuedKeys = new Map<string, { privateKeyB64: string; publicKey: string }>();
   entities = new Map<string, FakeEntity>();
   developers = new Map<string, string>(); // developer_id -> developer public key
   registerCalls = 0;
@@ -111,6 +129,62 @@ export class FakeAgentDns {
     }
   }
 
+  /** The developer-approval and handle endpoints (agent-dns internal/api/server.go). Returns true when it answered. */
+  private handleAdmin(req: import('node:http').IncomingMessage, raw: string, json: (status: number, body: unknown) => void): boolean {
+    const url = req.url ?? '';
+    if (req.method === 'POST' && url === '/v1/admin/developers/approve') {
+      this.approveCalls++;
+      if (req.headers.authorization !== `Bearer ${this.adminSecret}`) return json(401, { error: 'unauthorized' }), true;
+      if (this.failApprove) return json(500, { error: 'registry down' }), true;
+      const body = JSON.parse(raw) as { name?: string; state?: string };
+      if (!body.name || !body.state) return json(400, { error: 'name and state are required' }), true;
+      // The registry generates the key pair and returns the private key encrypted under SHA-256(state).
+      const seed = randomBytes(32);
+      const pub = ed25519.getPublicKey(seed);
+      const publicKey = `ed25519:${Buffer.from(pub).toString('base64')}`;
+      const developer_id = `zns:dev:${bytesToHex(sha256(pub).slice(0, 16))}`;
+      const privateKeyB64 = Buffer.concat([seed, pub]).toString('base64'); // Go's 64-byte ed25519.PrivateKey
+      const nonce = randomBytes(12);
+      const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(body.state).digest(), nonce);
+      const enc = Buffer.concat([cipher.update(privateKeyB64, 'utf8'), cipher.final()]);
+      this.developers.set(developer_id, publicKey);
+      this.issuedKeys.set(developer_id, { privateKeyB64, publicKey });
+      json(201, { developer_id, private_key_enc: Buffer.concat([nonce, enc, cipher.getAuthTag()]).toString('base64'), public_key: publicKey });
+      return true;
+    }
+    const avail = /^\/v1\/handles\/([^/]+)\/available$/.exec(url);
+    if (req.method === 'GET' && avail) {
+      const handle = decodeURIComponent(avail[1] as string);
+      const valid = /^[a-z][a-z0-9-]{2,39}$/.test(handle) && !handle.endsWith('-') && !handle.includes('--');
+      json(200, { handle, available: valid && !this.handles.has(handle) });
+      return true;
+    }
+    if (req.method === 'POST' && url === '/v1/handles') {
+      this.claimCalls++;
+      if (this.failClaim) return json(500, { error: 'registry down' }), true;
+      const b = JSON.parse(raw) as { handle?: string; developer_id?: string; public_key?: string; signature?: string };
+      if (!b.handle || !b.developer_id || !b.public_key || !b.signature) return json(400, { error: 'handle, developer_id, public_key, and signature are required' }), true;
+      if (!/^[a-z][a-z0-9-]{2,39}$/.test(b.handle) || b.handle.endsWith('-') || b.handle.includes('--')) return json(400, { error: 'invalid handle' }), true;
+      if (!this.developers.has(b.developer_id)) return json(404, { error: 'developer not found; register developer first' }), true;
+      // Signed over json.Marshal(map[string]string{...}): keys sorted, the public key exactly as sent.
+      const signable = canonicalJson({ developer_id: b.developer_id, handle: b.handle, public_key: b.public_key });
+      if (!verify(b.public_key, new TextEncoder().encode(signable), b.signature)) return json(401, { error: 'invalid signature' }), true;
+      if (this.handles.has(b.handle)) return json(409, { error: 'handle already taken' }), true;
+      this.handles.set(b.handle, { developer_id: b.developer_id, verified: false });
+      json(201, { handle: b.handle, developer_id: b.developer_id, message: 'handle claimed successfully' });
+      return true;
+    }
+    const verifyUrl = /^\/v1\/handles\/([^/]+)\/verify$/.exec(url);
+    if (req.method === 'POST' && verifyUrl) {
+      const h = this.handles.get(decodeURIComponent(verifyUrl[1] as string));
+      if (!h) return json(404, { error: 'handle not found' }), true;
+      h.verified = true;
+      json(200, { message: 'handle verified via github' });
+      return true;
+    }
+    return false;
+  }
+
   private async handle(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
     const json = (status: number, body: unknown) => {
       res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -119,6 +193,9 @@ export class FakeAgentDns {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const raw = Buffer.concat(chunks).toString('utf8');
+
+    const admin = this.handleAdmin(req, raw, json);
+    if (admin) return;
 
     const get = /^\/v1\/entities\/([^/]+)$/.exec(req.url ?? '');
     if (req.method === 'GET' && get) {
