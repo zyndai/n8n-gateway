@@ -3,7 +3,8 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   // n8n/** holds n8n Code-node bodies (top-level return, $ globals) and a standalone preview tool.
-  { ignores: ['dist', 'node_modules', 'src/db/migrations', 'packages/**', 'n8n/**'] },
+  // packages/** and apps/** are workspaces with their own lint (`npm run lint:nodes`, `npm run lint:studio`).
+  { ignores: ['dist', 'node_modules', 'src/db/migrations', 'packages/**', 'apps/**', 'n8n/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

@@ -22,7 +22,12 @@
     "db:check": "drizzle-kit check",
     "build:nodes": "npm run build -w n8n-nodes-zynd",
     "test:nodes": "npm test -w n8n-nodes-zynd",
-    "lint:nodes": "npm run lint -w n8n-nodes-zynd"
+    "lint:nodes": "npm run lint -w n8n-nodes-zynd",
+    "dev:studio": "npm run dev -w zynd-studio",
+    "build:studio": "npm run build -w zynd-studio",
+    "lint:studio": "npm run lint -w zynd-studio",
+    "typecheck:studio": "npm run typecheck -w zynd-studio",
+    "test:studio": "npm run test -w zynd-studio"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
@@ -48,6 +53,7 @@
     "vitest": "^5.1.0"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ]
 }
