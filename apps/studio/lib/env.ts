@@ -8,6 +8,20 @@ export function isPreview(env: Env = process.env): boolean {
   return ['1', 'true', 'yes', 'on'].includes((env.STUDIO_PREVIEW ?? '').toLowerCase());
 }
 
+/**
+ * Things worth a line in the server log at start-up. Preview mode makes every page public and shows sample data, so
+ * it must be off when real people use Studio: a production server in preview, or one that also has real settings
+ * (which means it was meant to be live), says so loudly.
+ */
+export function startupWarnings(env: Env = process.env): string[] {
+  const out: string[] = [];
+  if (isPreview(env)) {
+    if (env.NODE_ENV === 'production') out.push('STUDIO_PREVIEW is on: every page shows sample data and nobody signs in. Turn it off before real people use Studio.');
+    if (builderConfigured(env)) out.push('STUDIO_PREVIEW is on although the real settings are present, so this server shows sample data instead of the real thing. Is it meant to be live? Unset STUDIO_PREVIEW.');
+  }
+  return out;
+}
+
 export class ConfigError extends Error {
   constructor(readonly missing: string[]) {
     super(`Studio is not configured: set ${missing.join(', ')}`);
@@ -121,7 +135,7 @@ export function builderEnv(env: Env = process.env): BuilderEnv {
   return {
     openAiApiKey: env.OPENAI_API_KEY as string,
     openAiModel: (env.OPENAI_MODEL as string).trim(),
-    agentModel: env.AGENT_MODEL?.trim() || 'gpt-5-mini',
+    agentModel: env.AGENT_MODEL?.trim() || 'gpt-5.4-mini',
     openAiCredentialId: (env.N8N_OPENAI_CREDENTIAL_ID as string).trim(),
     agentDnsUrl: trimSlash(env.AGENTDNS_URL?.trim() || 'https://zns01.zynd.ai'),
     dataSources: parseDataSources(env.AIRNODE_SOURCES),

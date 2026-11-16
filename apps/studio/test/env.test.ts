@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, builderConfigured, builderEnv, creditEnv, parseDataSources } from '@/lib/env';
+import { ConfigError, builderConfigured, builderEnv, creditEnv, parseDataSources, startupWarnings } from '@/lib/env';
 
 describe('parseDataSources', () => {
   const good = { name: 'Briefpixel news', listingUrl: 'https://airnode-briefpixel.fly.dev', operation: 'listArticles', what: 'News', maxPriceUsd: '0.01', fields: 'q, limit' };
@@ -18,7 +18,7 @@ describe('parseDataSources', () => {
 describe('builderEnv', () => {
   const env = { OPENAI_API_KEY: 'sk-test', OPENAI_MODEL: 'gpt-5', N8N_OPENAI_CREDENTIAL_ID: 'cred1' };
   it('reads the settings with defaults', () => {
-    expect(builderEnv(env)).toMatchObject({ openAiApiKey: 'sk-test', openAiModel: 'gpt-5', agentModel: 'gpt-5-mini', openAiCredentialId: 'cred1', agentDnsUrl: 'https://zns01.zynd.ai', maxCallPriceUsd: '0.25', dataSources: [] });
+    expect(builderEnv(env)).toMatchObject({ openAiApiKey: 'sk-test', openAiModel: 'gpt-5', agentModel: 'gpt-5.4-mini', openAiCredentialId: 'cred1', agentDnsUrl: 'https://zns01.zynd.ai', maxCallPriceUsd: '0.25', dataSources: [] });
   });
   it('names what is missing without printing a value', () => {
     try {
@@ -41,5 +41,28 @@ describe('creditEnv', () => {
   it('reads the wallet with the test-network defaults', () => {
     expect(creditEnv({ TREASURY_PRIVATE_KEY: '0xabc' })).toMatchObject({ treasuryKey: '0xabc', rpcUrl: 'https://sepolia.base.org', chainId: 84532, decimals: 6, amountUsd: '1', maxAgents: 3, asset: '0xbeA34973e5f67F18F656A2C6070C64326C791808' });
     expect(creditEnv({ TREASURY_PRIVATE_KEY: '0xabc', STARTER_CREDIT_USD: '2', STARTER_CREDIT_MAX_AGENTS: '1', X402_RPC_URL: 'https://rpc.example.com/' })).toMatchObject({ amountUsd: '2', maxAgents: 1, rpcUrl: 'https://rpc.example.com' });
+  });
+});
+
+describe('startupWarnings', () => {
+  const real = {
+    NEXT_PUBLIC_SUPABASE_URL: 'https://x.supabase.co', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'k', GATEWAY_URL: 'http://gw', SESSION_JWT_SECRET: 's'.repeat(40), STUDIO_SERVICE_TOKEN: 't',
+    N8N_API_URL: 'http://n8n', N8N_API_KEY: 'k', N8N_MCP_URL: 'http://n8n/mcp', N8N_MCP_TOKEN: 't', OPENAI_API_KEY: 'sk', OPENAI_MODEL: 'm', N8N_OPENAI_CREDENTIAL_ID: 'c',
+  };
+  it('is quiet for a normal server and for local work', () => {
+    expect(startupWarnings({ ...real, NODE_ENV: 'production' })).toEqual([]);
+    expect(startupWarnings({ STUDIO_PREVIEW: '1', NODE_ENV: 'development' })).toEqual([]);
+    expect(startupWarnings({})).toEqual([]);
+  });
+  it('warns when a production server is in preview, which makes every page public', () => {
+    expect(startupWarnings({ STUDIO_PREVIEW: '1', NODE_ENV: 'production' })).toEqual([expect.stringMatching(/sample data and nobody signs in/)]);
+  });
+  it('warns louder when the real settings are there too: it was probably meant to be live', () => {
+    const w = startupWarnings({ ...real, STUDIO_PREVIEW: 'true', NODE_ENV: 'production' });
+    expect(w).toHaveLength(2);
+    expect(w[1]).toMatch(/Unset STUDIO_PREVIEW/);
+  });
+  it('never prints a secret', () => {
+    expect(JSON.stringify(startupWarnings({ ...real, STUDIO_PREVIEW: '1', NODE_ENV: 'production' }))).not.toMatch(/sk|ssss/);
   });
 });

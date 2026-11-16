@@ -117,8 +117,8 @@ function ChatView({ agentId, mode, built, saved }: { agentId: string; mode: Buil
     try {
       if (demo) await sendDemo();
       else await sendLive(text, history);
-    } catch {
-      add({ role: 'agent', text: copy.errors.generic });
+    } catch (err) {
+      add({ role: 'agent', text: err instanceof TypeError ? copy.errors.network : copy.errors.generic });
     } finally {
       if (alive.current) setBusy(false);
     }
