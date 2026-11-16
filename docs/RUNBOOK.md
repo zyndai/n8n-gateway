@@ -1,6 +1,6 @@
 # Gateway runbook
 
-For whoever runs the Gateway. Covers configuration, monitoring (M5.1), rate limits (M5.2), crash recovery of payments (M2.20) and rollback (M5.5). The host is still undecided (M0.18); nothing here depends on which one it is, only on one Node 20+ process, Postgres and outbound HTTPS/WebSockets.
+For whoever runs the Gateway. Covers configuration, monitoring (M5.1), rate limits (M5.2), crash recovery of payments (M2.20), rollback (M5.5) and Zynd Studio. The host is still undecided (M0.18); nothing here depends on which one it is, only on one Node 20+ process, Postgres and outbound HTTPS/WebSockets.
 
 ## Configuration
 
@@ -10,7 +10,9 @@ Set in the process environment (`.env.example` lists every variable).
 | --- | --- | --- |
 | `DATABASE_URL` | for anything beyond `/health` | Without it the Gateway serves `/health` and `/metrics` only |
 | `PKI_ENCRYPTION_KEY` | with `DATABASE_URL` | The dashboard's key. Also seals webhook secrets and payment proofs. Losing or changing it makes both unreadable |
-| `SESSION_JWT_SECRET` | with the dashboard | Same value on the dashboard host, 32+ characters |
+| `SESSION_JWT_SECRET` | with the dashboard or Studio | Same value on the dashboard host and in Studio, 32+ characters |
+| `STUDIO_SERVICE_TOKEN` | with Studio | 32+ characters, the same value in Studio. Unset = `POST /internal/v1/provision` does not exist |
+| `AGENTDNS_WEBHOOK_SECRET` | with Studio | The registry's admin secret (the dashboard's value). Lets the Gateway create developer identities for Studio. Unset = provisioning answers 502 |
 | `PUBLIC_URL` | yes | `entity_url` of every listing is `{PUBLIC_URL}/a/{entityId}`; changing it moves every agent |
 | `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST` | optional | Default 300 and 60 per API key; `RATE_LIMIT_PER_MINUTE=0` turns the limit off |
 | `METRICS_TOKEN` | optional | Enables `GET /metrics` |
@@ -117,3 +119,59 @@ Things to know when rolling back across a specific release:
 Roll the dashboard back separately (Vercel). The Gateway does not need to change: it only reads the Session JWT and the shared `developer_keys` table.
 
 If a bad release is a bad migration, fix forward with a new migration; Drizzle records applied migrations in `drizzle.__drizzle_migrations`.
+
+## Zynd Studio
+
+Studio (`apps/studio`, [plan](STUDIO_PLAN.md)) is one more container next to the Gateway and n8n. It has no database and is not needed by either.
+
+**Server setup, once**
+
+1. Point a subdomain (for example `studio.thenorthbound.agency`) at the server and add it to the reverse proxy, forwarding to `127.0.0.1:3100`. Nginx:
+
+   ```nginx
+   server {
+     server_name studio.thenorthbound.agency;
+     listen 443 ssl;                       # certificate lines as for the Gateway's server block
+     location / {
+       proxy_pass http://127.0.0.1:3100;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+     }
+   }
+   ```
+
+   Caddy: `studio.thenorthbound.agency { reverse_proxy 127.0.0.1:3100 }`.
+2. Create `/opt/zynd-n8n-gateway/studio.env` (mode 600) from [`apps/studio/.env.example`](../apps/studio/.env.example). Start with `STUDIO_PREVIEW=1`, `STUDIO_PUBLIC_URL`, and `SESSION_JWT_SECRET` (any 32+ characters in preview): that serves the sample screens. For sign-in, add the Supabase pair, `STUDIO_SERVICE_TOKEN`, `N8N_API_KEY` and `N8N_MCP_TOKEN`, and unset `STUDIO_PREVIEW`.
+3. Add `STUDIO_SERVICE_TOKEN` and `AGENTDNS_WEBHOOK_SECRET` to the Gateway's `/opt/zynd-n8n-gateway/.env`, and restart the Gateway (the next deploy does it).
+4. In the zynd.ai Supabase project, add `{STUDIO_PUBLIC_URL}/auth/callback` to the allowed redirect URLs.
+
+**Agent builder and agents (S2, S3).** These need more in `studio.env`; each is listed with its default in [`apps/studio/.env.example`](../apps/studio/.env.example):
+
+| Setting | What it is | Without it |
+| --- | --- | --- |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | The platform's OpenAI key and the model that drives the builder chat | Create agent shows "not switched on yet" |
+| `N8N_OPENAI_CREDENTIAL_ID` | The id of the platform's "OpenAI account" credential in n8n. Agents may use that credential and no other | Same |
+| `AGENT_MODEL` | The model agents run on in n8n (default `gpt-5.4-mini`); any other model in a workflow is refused | Default |
+| `AIRNODE_SOURCES` | JSON array of the AirnodeHub operations the builder may give an agent (name, listingUrl, operation, what, maxPriceUsd, fields) | Agents can hire helpers and read the web, but use no data sources |
+| `TREASURY_PRIVATE_KEY` | The platform wallet that sends each new agent starter credit. Needs test aUSD and a little Base Sepolia ETH | Agents are created with no credit |
+| `STARTER_CREDIT_USD`, `STARTER_CREDIT_MAX_AGENTS` | Credit per agent (default 1) and how many of a person's first agents get it (default 3) | Defaults |
+| `AGENT_MAX_CALL_USD` | The most one helper or data-source call may cost (default 0.25) | Default |
+
+The `N8N_MCP_TOKEN` belongs to the n8n owner and can change anything on the instance, so it lives only in `studio.env` (mode 600). Studio's server is the only thing that holds it, and it passes the builder's calls on only through its guard rails (allow-listed tools, the agent's own workflow, approved steps and credentials; see the [plan](STUDIO_PLAN.md#guard-rails)). The platform wallet key is as sensitive: use a wallet that holds only test funds.
+
+Things to know when it runs:
+
+- **Starter credit** is sent from the platform wallet to the new agent's own wallet. When the platform wallet is low the agent is still created and the person is told it has no credit; top the wallet up and later agents get theirs. Look for `starter credit:` lines in `docker logs zynd-studio`.
+- **A person's agents** are listings tagged `zynd-studio` plus a workflow in n8n's owner project, tagged `zynd-studio` and named `<agent> · <first 8 characters of the listing id>`. Deleting an agent in Studio archives the workflow and deletes the listing.
+- **OpenAI spend** has no per-person meter yet: each person is limited to 30 builder messages an hour, and agents run on `AGENT_MODEL`. Set a usage limit on the OpenAI project.
+- **Changing a live agent.** A change made by chat is saved as a newer version of the workflow; the live agent keeps running the earlier version until a test has passed, then Studio publishes the new one by itself. Publishing a workflow with a Zynd Trigger unbinds and rebinds its webhook, so a hire arriving in that moment can fail. If a change could not be put live, the person is told and `docker logs zynd-studio` has a `builder: could not put a change live:` line.
+- **A server in preview mode** logs `studio: STUDIO_PREVIEW is on …` when it starts. On a live server that means the sample screens are being shown instead of the real ones: unset `STUDIO_PREVIEW` and restart.
+- **The demo** has its own script and checklist: [STUDIO_DEMO.md](STUDIO_DEMO.md).
+- **If an agent will not run** (the app says it "is not finished yet"), the workflow in n8n was changed outside Studio to something Studio does not allow (a Code step, another listing, another credential). Studio refuses to run or publish it until it is put right.
+
+**Deploy.** `scripts/deploy/deploy.sh` builds and starts the `zynd-studio` container after the Gateway and n8n are healthy, only when `studio.env` exists. A Studio failure is reported and rolls Studio back to its previous image, and never fails the Gateway deploy. `studio` joins the `zynd-n8n-net` network, so `N8N_API_URL=http://zynd-n8n:5678` and `N8N_MCP_URL=http://zynd-n8n:5678/mcp-server/http` work from inside it; the Gateway is reached at its public `GATEWAY_URL`.
+
+**Check.** `curl https://studio.thenorthbound.agency/api/health` answers `{"ok":true}`. `docker logs zynd-studio` shows setup failures as `sign-in setup failed at "identity" | "key" | "credential"`: `identity` = the Gateway or registry (check `STUDIO_SERVICE_TOKEN`, `AGENTDNS_WEBHOOK_SECRET`), `key` = the Gateway's API key route, `credential` = n8n (check `N8N_API_KEY`, `N8N_MCP_TOKEN`). Setup is safe to retry: a person signing in again resumes where it stopped.
+
+**Rollback.** Redeploy an earlier commit, or `docker rm -f zynd-studio` (the Gateway and n8n do not notice). Studio keeps nothing: sign-in is Supabase's and agents are Gateway listings.

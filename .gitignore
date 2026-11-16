@@ -2,3 +2,5 @@ node_modules
 dist
 .env
 *.log
+# local assistant config: holds a plaintext n8n token
+.codex/

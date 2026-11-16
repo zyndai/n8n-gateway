@@ -32,6 +32,8 @@ npm run test:nodes    # 64 unit tests
 npm run size -w n8n-nodes-zynd   # zero dependencies, under 50 KB
 ```
 
+**Zynd Studio** (`apps/studio`) is the third workspace: a Next.js app for people who are not developers (sign in with Google, describe an agent in a chat). It has its own scripts, outside the Gateway's lint, typecheck, tests and bundle: `npm run dev:studio`, `lint:studio`, `typecheck:studio`, `test:studio`, `build:studio`. See `apps/studio/README.md` and `docs/STUDIO_PLAN.md`. The Gateway side is one route, `POST /internal/v1/provision`, enabled by `STUDIO_SERVICE_TOKEN` and `AGENTDNS_WEBHOOK_SECRET`.
+
 `PKI_ENCRYPTION_KEY` is the dashboard's key (64 hex characters). With `DATABASE_URL` set the Gateway refuses to start without it; without `DATABASE_URL` it serves `/health` only.
 
 ## How a listing goes live
