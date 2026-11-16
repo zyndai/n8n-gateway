@@ -65,7 +65,7 @@ export const copy = {
   },
 
   agent: {
-    tabs: { chat: 'Chat', activity: 'Activity', settings: 'Settings' },
+    tabs: { chat: 'Chat', edit: 'Make changes', activity: 'Activity', settings: 'Settings' },
     publish: 'Publish',
     chatPlaceholder: 'Ask your agent something…',
     chatEmpty: 'Ask your agent something to try it out.',
@@ -79,6 +79,7 @@ export const copy = {
       you: 'You tried it',
       other: 'Another agent hired it',
       empty: 'Nothing here yet. Try your agent or publish it to see activity.',
+      loadFailed: 'We could not load the recent activity just now. Please reload the page in a moment.',
       earned: (amount: string) => `earned ${amount}`,
       spent: (amount: string) => `cost ${amount}`,
       done: 'Done',
@@ -109,6 +110,20 @@ export const copy = {
     deleted: 'Agent deleted.',
   },
 
+  // Changing an agent that already exists (S4.1), on the agent page.
+  edit: {
+    chatTitle: 'What should change?',
+    placeholder: 'For example: also check sanctions lists…',
+    intro: 'Tell your agent what to change, in plain words. Studio makes the change and tests it.',
+    introLive: 'Tell your agent what to change, in plain words. Studio makes the change and tests it. A change that passes its test goes live by itself, and your agent keeps working in the meantime.',
+    steps: ['Finding helpers', 'Updating', 'Testing', 'Ready'],
+    live: {
+      updated: 'Done. Your live agent now uses this change.',
+      held: 'Your live agent still uses its earlier version, because this change has not passed a test yet.',
+      failed: 'We could not put this change live just now. Please send it again in a minute.',
+    },
+  },
+
   publish: {
     title: 'Publish your agent',
     body: 'Check how it will look to other agents. Once it is live, anyone can hire it for the price below.',
@@ -127,10 +142,16 @@ export const copy = {
 
   // Plain words and a next step for every error the user can meet (S4.2 uses these everywhere).
   errors: {
-    outOfCredit: 'Your agent ran out of credit. Add credit and try again.',
+    outOfCredit: 'Your agent has run out of credit, so it cannot hire helpers right now. Credit top-ups are not available yet: please ask the Studio team to add some.',
     helperFailed: 'A helper did not answer. Please try again.',
     tookTooLong: 'This took too long. Please try again.',
     generic: 'Something went wrong on our side. Please try again in a moment.',
+    unavailable: 'Studio could not reach one of its services just now. Please try again in a moment.',
+    network: 'We could not reach Studio. Please check your connection and try again.',
+    cutOff: 'This was interrupted before it finished. Your agent is saved: send your message again to carry on.',
+    loadFailedTitle: 'This page did not load',
+    loadFailed: 'We could not load this page just now. Please try again in a moment.',
+    retry: 'Try again',
     notFound: 'We could not find that agent.',
     signedOut: 'Please sign in again to continue.',
     notBuilt: 'This agent has not been built yet. Finish building it first.',
@@ -172,6 +193,8 @@ export function apiMessage(code: string | undefined, kind?: string): string {
     case 'preview':
     case 'not-configured':
       return e.notSwitchedOn;
+    case 'unavailable':
+      return e.unavailable;
     case 'forbidden':
       return e.forbidden;
     default:

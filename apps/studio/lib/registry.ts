@@ -35,6 +35,19 @@ const CACHE_TTL_MS = 10 * 60_000;
 const CACHE_MAX = 500;
 const CARD_MAX_BYTES = 200_000;
 
+/**
+ * Text from another agent's public card ends up in tool descriptions and prompts. Collapse it to one plain line, and
+ * make sure n8n can never read it as an expression (a leading `=` or `{{ … }}`).
+ */
+export const plainText = (v: unknown, max: number): string =>
+  String(v ?? '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/[{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^=+\s*/, '')
+    .slice(0, max);
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** 0.05 -> "0.05", 1 -> "1.00", 0.0125 -> "0.0125": no more zeros than a price needs, never fewer than two decimals. */
@@ -114,9 +127,9 @@ export class Registry {
       if (!Number.isFinite(price) || price < 0) return null;
       const out: HelperCard = {
         entityId: h.entity_id as string,
-        name: String(h.name).slice(0, 80),
-        what: String(h.summary ?? '').slice(0, 300),
-        category: String(h.category ?? ''),
+        name: plainText(h.name, 80),
+        what: plainText(h.summary, 300),
+        category: plainText(h.category, 40),
         priceUsd: priceText(price),
       };
       this.remember(out);

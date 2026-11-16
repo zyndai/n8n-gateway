@@ -175,4 +175,90 @@ describe('runBuild', () => {
     await run(new FakeModel([{ text: 'fine' }]));
     expect(types()).toContain('done');
   });
+
+  describe('editing a live agent (S4.1)', () => {
+    /** A built, live agent whose published version is the newest one. */
+    const live = (over: { versionId?: string; activeVersionId?: string } = {}) => {
+      gw.listings[0]!.workflowId = 'wf-1';
+      gw.listings[0]!.status = 'ACTIVE';
+      const wf = goodWorkflow((nodes) => {
+        for (const node of nodes) {
+          if (node.parameters?.listingId) node.parameters.listingId = agentId;
+          if (node.parameters?.payFromListingId) node.parameters.payFromListingId = agentId;
+        }
+      });
+      mcp.workflow = { ...wf, active: true, versionId: over.versionId ?? 'v1', activeVersionId: over.activeVersionId ?? 'v1' };
+      mcp.executions.set('100', finishedRun({ answer: 'Still fine.' }));
+    };
+    const liveEvents = () => events.filter((e) => e.type === 'live');
+    const edit = { calls: [{ name: 'edit_agent', args: { web: false } }] };
+    const test = { calls: [{ name: 'test_agent', args: { question: 'Check ACME Ltd' } }] };
+
+    it('puts a tested change live by itself, before the message ends', async () => {
+      await run(new FakeModel([edit, test, { text: 'Done: it no longer browses the web.' }]));
+      expect(liveEvents()).toEqual([{ type: 'live', state: 'updated' }]);
+      expect(mcp.callsTo('publish_workflow')).toHaveLength(1);
+      expect(mcp.workflow).toMatchObject({ versionId: 'v2', activeVersionId: 'v2' });
+      expect(types().slice(-3)).toEqual(['live', 'thread', 'done']);
+    });
+
+    it('keeps the earlier version running when the change was not tested, and says so', async () => {
+      await run(new FakeModel([edit, { text: 'Changed it.' }]));
+      expect(liveEvents()).toEqual([{ type: 'live', state: 'held' }]);
+      expect(mcp.callsTo('publish_workflow')).toEqual([]);
+      expect(mcp.workflow).toMatchObject({ versionId: 'v2', activeVersionId: 'v1' });
+    });
+
+    it('does not put a change live when its test failed', async () => {
+      mcp.executions.set('100', finishedRun({ status: 'error', answer: '', error: 'Agent task failed' }));
+      await run(new FakeModel([edit, test, { text: 'I could not finish.' }]));
+      expect(liveEvents()).toEqual([{ type: 'live', state: 'held' }]);
+      expect(mcp.callsTo('publish_workflow')).toEqual([]);
+    });
+
+    it('finishes the job in a later message: a change held earlier goes live once a test passes', async () => {
+      live({ versionId: 'v2', activeVersionId: 'v1' });
+      await run(new FakeModel([test, { text: 'It works.' }]));
+      expect(liveEvents()).toEqual([{ type: 'live', state: 'updated' }]);
+      expect(mcp.workflow?.activeVersionId).toBe('v2');
+    });
+
+    it('says nothing, and publishes nothing, for a message that changed nothing', async () => {
+      await run(new FakeModel([{ text: 'It checks suppliers for you.' }]));
+      expect(liveEvents()).toEqual([]);
+      expect(mcp.callsTo('publish_workflow')).toEqual([]);
+    });
+
+    it('tells the person plainly when the change could not be put live', async () => {
+      mcp.failTool.publish_workflow_once = 'n8n: webhook already registered at https://secret.example/hook';
+      await run(new FakeModel([edit, test, { text: 'Done.' }]));
+      expect(liveEvents()).toEqual([{ type: 'live', state: 'failed' }]);
+      expect(JSON.stringify(events)).not.toContain('secret.example');
+      expect(types()).toContain('done');
+    });
+
+    it('goes on if n8n cannot say which version is running: a change made now is put live', async () => {
+      live();
+      delete mcp.workflow!.activeVersionId;
+      await run(new FakeModel([edit, test, { text: 'Done.' }]));
+      expect(liveEvents()).toEqual([{ type: 'live', state: 'updated' }]);
+    });
+
+    it('leaves an agent that is not live alone: its change waits for Publish', async () => {
+      live();
+      gw.listings[0]!.status = 'INACTIVE';
+      mcp.workflow = { ...mcp.workflow!, active: false };
+      await run(new FakeModel([edit, test, { text: 'Done.' }]));
+      expect(liveEvents()).toEqual([]);
+      expect(mcp.callsTo('publish_workflow')).toEqual([]);
+    });
+
+    it('keeps the price its owner set when the model re-describes the agent', async () => {
+      gw.listings[0]!.priceUsd = '0.40';
+      await run(new FakeModel([{ calls: [{ name: 'update_preview', args: { name: 'Supplier Check', description: 'Checks suppliers.', suggested_price_usd: '0.99' } }] }, { text: 'ok' }]));
+      expect(gw.listings[0]).toMatchObject({ name: 'Supplier Check', priceUsd: '0.40' });
+    });
+
+    beforeEach(() => live());
+  });
 });

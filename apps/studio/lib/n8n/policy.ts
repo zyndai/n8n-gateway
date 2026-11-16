@@ -9,15 +9,24 @@ export interface N8nNode {
   type: string;
   typeVersion?: number;
   disabled?: boolean;
+  position?: [number, number];
   parameters?: Record<string, unknown>;
   credentials?: Record<string, { id?: string | null; name?: string | null } | undefined>;
 }
 
+/** One kind of connection out of a step: a list of outputs, each a list of the steps it feeds. */
+export type ConnectionList = ({ node: string; type?: string; index?: number }[] | null)[];
+
 export interface N8nWorkflow {
   id?: string;
   name?: string;
+  /** Turned on (published). */
+  active?: boolean;
+  /** The newest saved version, and the one that is running. They differ while a live agent has changes not yet published. */
+  versionId?: string;
+  activeVersionId?: string | null;
   nodes: N8nNode[];
-  connections?: Record<string, { main?: ({ node: string }[] | null)[] }>;
+  connections?: Record<string, Partial<Record<string, ConnectionList>>>;
   settings?: Record<string, unknown>;
 }
 

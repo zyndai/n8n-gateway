@@ -6,7 +6,7 @@ import { OpenAIError } from '@/lib/openai';
 import { FakeModel, outputsOf } from './helpers/fakeOpenAI';
 
 const tools = (run: BuilderTools['run'] = async (name) => JSON.stringify({ ran: name })): BuilderTools & { ran: string[] } => {
-  const t = { specs: [{ type: 'function' as const, name: 'a', description: 'd', parameters: {} }], ran: [] as string[], run: async (n: string, a: string) => (t.ran.push(`${n}(${a})`), run(n, a)) };
+  const t = { specs: [{ type: 'function' as const, name: 'a', description: 'd', parameters: {} }], state: () => ({ changed: false, tested: false }), ran: [] as string[], run: async (n: string, a: string) => (t.ran.push(`${n}(${a})`), run(n, a)) };
   return t;
 };
 const base = (model: FakeModel, t: BuilderTools, events: BuildEvent[], over = {}) => ({ openai: model, model: 'm', instructions: 'i', tools: t, userText: 'Check suppliers', emit: (e: BuildEvent) => void events.push(e), ...over });

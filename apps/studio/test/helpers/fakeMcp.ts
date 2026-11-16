@@ -1,6 +1,7 @@
 import type { McpLike } from '../../lib/n8n/relay';
 import { McpError } from '../../lib/n8n/mcp';
 import type { N8nWorkflow } from '../../lib/n8n/policy';
+import { applyOps } from './applyOps';
 import { goodWorkflow } from './readback';
 
 export interface Call {
@@ -17,6 +18,7 @@ export class FakeMcp implements McpLike {
   created: N8nWorkflow = goodWorkflow();
   /** Applied to `workflow` on every `update_workflow`. */
   onUpdate: ((wf: N8nWorkflow, args: Record<string, unknown>) => void) | undefined;
+  versions = 1;
   executions = new Map<string, unknown>();
   nextExecution = 100;
   executeReply: ((args: Record<string, unknown>) => unknown) | undefined;
@@ -38,7 +40,12 @@ export class FakeMcp implements McpLike {
         if (!this.workflow) throw new McpError('Workflow not found');
         return { workflow: this.workflow };
       case 'update_workflow':
-        if (this.workflow) this.onUpdate?.(this.workflow, args);
+        if (this.workflow) {
+          applyOps(this.workflow, args.operations);
+          this.onUpdate?.(this.workflow, args);
+          // A live workflow keeps running its published version until it is published again.
+          if (this.workflow.active) this.workflow.versionId = `v${++this.versions}`;
+        }
         return { success: true };
       case 'execute_workflow': {
         if (this.executeReply) return this.executeReply(args);
@@ -50,7 +57,17 @@ export class FakeMcp implements McpLike {
       case 'search_workflow_executions':
         return this.searchResults;
       case 'publish_workflow':
-        return { success: true, workflowId: args.workflowId, activeVersionId: 'v1' };
+        if (this.failTool.publish_workflow_once) {
+          const message = this.failTool.publish_workflow_once;
+          delete this.failTool.publish_workflow_once;
+          throw new McpError(message);
+        }
+        if (this.workflow) {
+          this.workflow.active = true;
+          this.workflow.versionId ??= 'v1';
+          this.workflow.activeVersionId = this.workflow.versionId;
+        }
+        return { success: true, workflowId: args.workflowId, activeVersionId: this.workflow?.activeVersionId ?? 'v1' };
       case 'unpublish_workflow':
       case 'archive_workflow':
         return { success: true };

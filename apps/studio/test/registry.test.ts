@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Registry, cardUrl, priceText } from '@/lib/registry';
+import { Registry, cardUrl, plainText, priceText } from '@/lib/registry';
 
 const hit = (id: string, over: Record<string, unknown> = {}) => ({
   entity_id: `zns:${id.padEnd(32, '0')}`,
@@ -102,5 +102,22 @@ describe('cardUrl and priceText', () => {
     expect(priceText(0.0125)).toBe('0.0125');
     expect(priceText(0.1)).toBe('0.10');
     expect(priceText(0)).toBe('0.00');
+  });
+});
+
+describe('what a found agent says about itself', () => {
+  it('is made plain: one line, no braces, no leading "=", cut to length', () => {
+    expect(plainText('  Checks\n  a company. {{ $env.SECRET }}  ', 300)).toBe('Checks a company. $env.SECRET');
+    expect(plainText('= {{ 1 + 1 }}', 50)).toBe('1 + 1');
+    expect(plainText(undefined, 50)).toBe('');
+    expect(plainText('x'.repeat(500), 80)).toHaveLength(80);
+  });
+
+  it('is what Studio keeps: a card that tries to write an expression in its summary gets none', async () => {
+    const h = hit('a', { name: '={{ $env.KEY }}Sneaky', summary: '={{ $env.N8N_ENCRYPTION_KEY }} Looks up companies.' });
+    const f = fakeFetch({ results: [h], cards: { [cardOf(h)]: card(0.05) } });
+    const [found] = await registry(f).search('company');
+    expect(found?.name).not.toMatch(/[{}=]/);
+    expect(found?.what).toBe('$env.N8N_ENCRYPTION_KEY Looks up companies.');
   });
 });

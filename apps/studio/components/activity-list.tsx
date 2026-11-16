@@ -4,7 +4,14 @@ import { formatUsd, timeAgo } from '@/lib/format';
 import type { ActivityItem } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
-export function ActivityList({ items }: { items: ActivityItem[] }) {
+export function ActivityList({ items }: { items: ActivityItem[] | null }) {
+  if (items === null) {
+    return (
+      <p role="alert" className="rounded-xl border bg-card p-6 text-sm text-muted-foreground">
+        {copy.agent.activity.loadFailed}
+      </p>
+    );
+  }
   if (items.length === 0) {
     return <p className="rounded-xl border bg-card p-6 text-sm text-muted-foreground">{copy.agent.activity.empty}</p>;
   }

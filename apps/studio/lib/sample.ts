@@ -79,3 +79,9 @@ export const SAMPLE_BUILD = {
     helpers: SAMPLE_HELPERS,
   },
 } as const;
+
+/** What the scripted edit says in preview mode (the Make changes tab). */
+export const SAMPLE_EDIT = {
+  suggestion: 'Also check sanctions lists',
+  reply: 'Done. I added a sanctions check to your agent and tried it on a sample supplier: it came back clean. Your live agent now uses the change.',
+} as const;

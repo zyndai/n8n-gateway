@@ -17,10 +17,18 @@ export interface Preview {
   suggestedPriceUsd: string;
 }
 
+export type LiveState = 'updated' | 'held' | 'failed';
+
 export type BuildEvent =
   | { type: 'text'; delta: string }
   | { type: 'preview'; preview: Preview }
   | { type: 'progress'; step: BuildStep }
+  /**
+   * What happened to a live agent's change once the message ended: `updated` (tested, now running), `held` (not
+   * tested, so the agent still runs its earlier version) or `failed` (could not be put live; same earlier version
+   * unless n8n says otherwise).
+   */
+  | { type: 'live'; state: LiveState }
   /** The token to send with the next message so the conversation continues. */
   | { type: 'thread'; token: string }
   | { type: 'done' }

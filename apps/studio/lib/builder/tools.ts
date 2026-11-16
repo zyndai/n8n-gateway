@@ -12,13 +12,14 @@ import type { HelperCard } from '../registry';
 import type { Helper } from '../types';
 import { BUILD_STEPS, type BuildEvent, type BuildStep, type Preview } from './events';
 import { NAME_LIMIT, SUMMARY_LIMIT } from './limits';
+import type { AgentEdit, ToolInfo } from './edit';
 import { renderTemplate, type TemplateHelper, type TemplateSource } from './template';
 
 export interface BuilderToolsDeps {
   listing: { id: string; name: string };
-  /** Saves the agent's name, description and suggested price on its listing. */
-  save(patch: { name: string; summary: string; priceUsd: string }): Promise<unknown>;
-  relay: Pick<WorkflowRelay, 'callForModel' | 'startRun' | 'readRun' | 'workflowId'>;
+  /** Saves the agent's name and description on its listing, and its suggested price while it is still being built. */
+  save(patch: { name: string; summary: string; priceUsd?: string }): Promise<unknown>;
+  relay: Pick<WorkflowRelay, 'callForModel' | 'startRun' | 'readRun' | 'workflowId' | 'setup' | 'applyEdit'>;
   registry: { search(query: string, limit?: number): Promise<HelperCard[]>; lookup(entityId: string): HelperCard | undefined };
   dataSources: DataSource[];
   agentModel: string;
@@ -37,6 +38,8 @@ export interface BuilderToolsDeps {
 export interface BuilderTools {
   specs: ToolSpec[];
   run(name: string, rawArgs: string): Promise<string>;
+  /** Where the agent stands after what has been called so far in this conversation turn. */
+  state(): { /** The workflow was changed. */ changed: boolean; /** A test run answered since the last change. */ tested: boolean };
 }
 
 const OUTPUT_MAX = 14_000;
@@ -93,6 +96,24 @@ export const TOOL_SPECS: ToolSpec[] = [
       ['instructions'],
     ),
   ),
+  fn('get_agent_setup', 'What the agent does now (its instructions) and the tools it has: helpers, data sources and the web reader. Read this first when changing an agent that already exists.', obj({})),
+  fn(
+    'edit_agent',
+    'Change an agent that already has a version: replace its instructions, add helpers or data sources, take tools away, switch the web reader on or off. All in one step; ids, credentials and payment limits are filled in for you. Run test_agent afterwards.',
+    obj({
+      instructions: { type: 'string', description: 'The complete new instructions (replaces the old ones, so keep what should stay). Under 1500 characters.' },
+      add_helpers: {
+        type: 'array',
+        items: obj(
+          { id: { type: 'string', description: 'An id returned by find_helpers.' }, input: { type: 'string', enum: ['text', 'json'] }, fields: { type: 'string', description: 'For json helpers: the field names, comma separated.' } },
+          ['id', 'input'],
+        ),
+      },
+      add_data_sources: { type: 'array', items: { type: 'string' }, description: 'Names returned by list_data_sources.' },
+      remove: { type: 'array', items: { type: 'string' }, description: 'Names of tools to take away, as get_agent_setup lists them.' },
+      web: { type: 'boolean', description: 'true adds the web reader, false removes it.' },
+    }),
+  ),
   fn('test_agent', 'Run the agent once with a sample request and wait for its answer. May cost a few cents of the agent\'s credit. Needed before progress("ready").', obj({ question: { type: 'string' } }, ['question'])),
   fn('progress', 'Tell the person which step you are on. "ready" is only accepted after a successful test_agent.', obj({ step: { type: 'string', enum: [...BUILD_STEPS] } }, ['step'])),
 
@@ -110,6 +131,7 @@ const PASSTHROUGH = new Set(MODEL_TOOL_NAMES);
 
 export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
   let tested = false;
+  let changed = false;
   let testsRun = 0;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
@@ -156,7 +178,8 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
     const price = USD.test(asked) ? asked : DEFAULT_PRICE;
     const preview: Preview = { name, does: description, helpers: list, costUsd: fromMicro(cost), suggestedPriceUsd: price };
 
-    await deps.save({ name, summary: description, priceUsd: price });
+    // An agent that is already built keeps the price its owner has: only the first build suggests one.
+    await deps.save({ name, summary: description, ...(deps.relay.workflowId ? {} : { priceUsd: price }) });
     deps.listing.name = name;
     deps.emit({ type: 'preview', preview });
     return ok({ shown: true, cost_per_use_usd: preview.costUsd });
@@ -203,6 +226,47 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
       web: a.web === true,
     });
     return ok(`Workflow code (submit to create_workflow_from_code unchanged unless a plain extra step is needed):\n\n${code}`);
+  }
+
+  async function agentSetup(): Promise<string> {
+    if (!deps.relay.workflowId) return fail('This agent has no version yet: build it first.');
+    const { instructions, tools } = await deps.relay.setup();
+    return ok({ instructions, tools: tools.map(toolView) });
+  }
+
+  const toolView = (t: ToolInfo) => ({ name: t.name, kind: t.kind, what: t.what, ...(t.maxPriceUsd ? { max_price_usd: t.maxPriceUsd } : {}) });
+
+  async function editAgent(a: Record<string, unknown>): Promise<string> {
+    if (!deps.relay.workflowId) return fail('This agent has no version yet. Build it with get_template and create_workflow_from_code instead.');
+    const edit: AgentEdit = {};
+    if (a.instructions !== undefined) {
+      const text = str(a.instructions, 1600);
+      if (!text) return fail('"instructions" is empty. Send the complete new instructions, or leave it out to keep the old ones.');
+      if (text.length > 1500) return fail('The instructions are too long: 1500 characters at most.');
+      edit.instructions = text;
+    }
+    if (Array.isArray(a.add_helpers) && a.add_helpers.length) {
+      const given = a.add_helpers.filter(isObj);
+      const cards = findHelpers(given.map((h) => h.id));
+      if (typeof cards === 'string') return fail(cards);
+      edit.addHelpers = cards.map((card, i) => {
+        const h = given[i] as Record<string, unknown>;
+        const fields = str(h.fields, 200);
+        return { card, input: h.input === 'text' ? 'text' : 'json', ...(fields ? { fields } : {}) };
+      });
+    }
+    if (Array.isArray(a.add_data_sources) && a.add_data_sources.length) {
+      const sources = findSources(a.add_data_sources);
+      if (typeof sources === 'string') return fail(sources);
+      edit.addSources = sources;
+    }
+    if (Array.isArray(a.remove) && a.remove.length) edit.remove = a.remove.filter((n): n is string => typeof n === 'string');
+    if (typeof a.web === 'boolean') edit.web = a.web;
+
+    const { result, tools } = await deps.relay.applyEdit(edit, deps.zyndCredentialName);
+    changed = true;
+    tested = false;
+    return ok({ ...(isObj(result) ? result : {}), tools: tools.map(toolView), next: 'Run test_agent with a realistic request that uses the change.' });
   }
 
   async function testAgent(a: Record<string, unknown>): Promise<string> {
@@ -261,6 +325,7 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
 
   return {
     specs: TOOL_SPECS,
+    state: () => ({ changed, tested }),
     async run(name, rawArgs) {
       let args: Record<string, unknown> = {};
       try {
@@ -284,6 +349,10 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
             return await updatePreview(args);
           case 'get_template':
             return getTemplate(args);
+          case 'get_agent_setup':
+            return await agentSetup();
+          case 'edit_agent':
+            return await editAgent(args);
           case 'test_agent':
             return await testAgent(args);
           case 'progress':
@@ -293,7 +362,10 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
             {
               const result = await deps.relay.callForModel(name, args);
               // Any saved change makes an earlier test out of date.
-              if (name === 'create_workflow_from_code' || name === 'update_workflow') tested = false;
+              if (name === 'create_workflow_from_code' || name === 'update_workflow') {
+                tested = false;
+                changed = true;
+              }
               return ok(result);
             }
         }

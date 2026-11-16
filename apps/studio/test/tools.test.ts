@@ -14,7 +14,7 @@ const WALLET: HelperCard = { entityId: 'zns:7e2b5c1f9628fe2429a9d663bd03111b', n
 describe('builder tools', () => {
   let mcp: FakeMcp;
   let events: BuildEvent[];
-  let saved: { name: string; summary: string; priceUsd: string }[];
+  let saved: { name: string; summary: string; priceUsd?: string }[];
   let known: Map<string, HelperCard>;
   let searched: string[];
   let listing: { id: string; name: string };
@@ -71,7 +71,7 @@ describe('builder tools', () => {
 
   it('offers exactly the tools the plan allows, nothing that publishes, deletes or runs raw n8n calls', () => {
     const names = TOOL_SPECS.map((s) => s.name);
-    expect(names).toEqual(['find_helpers', 'list_data_sources', 'update_preview', 'get_template', 'test_agent', 'progress', 'search_nodes', 'get_node_types', 'get_workflow_sdk_reference', 'get_workflow_best_practices', 'validate_workflow', 'create_workflow_from_code', 'update_workflow', 'get_workflow_details']);
+    expect(names).toEqual(['find_helpers', 'list_data_sources', 'update_preview', 'get_template', 'get_agent_setup', 'edit_agent', 'test_agent', 'progress', 'search_nodes', 'get_node_types', 'get_workflow_sdk_reference', 'get_workflow_best_practices', 'validate_workflow', 'create_workflow_from_code', 'update_workflow', 'get_workflow_details']);
     for (const bad of ['publish_workflow', 'unpublish_workflow', 'archive_workflow', 'execute_workflow', 'list_credentials', 'create_agent']) expect(names).not.toContain(bad);
     // Function tools are strict by default in the Responses API; these have optional arguments.
     expect(TOOL_SPECS.every((s) => s.strict === false)).toBe(true);
@@ -226,6 +226,80 @@ describe('builder tools', () => {
 
     it('will not test an agent that has no workflow yet', async () => {
       expect((await call('test_agent', { question: 'x' })).error).toMatch(/no workflow yet/);
+    });
+  });
+
+  describe('changing an agent that already exists (S4.1)', () => {
+    beforeEach(() => {
+      bindState.workflowId = 'wf-1';
+      mcp.workflow = goodWorkflow();
+    });
+    const toolNames = () => (mcp.workflow?.nodes ?? []).map((n) => n.name);
+
+    it('get_agent_setup shows what it does and its tools, with prices but no ids', async () => {
+      const out = await call('get_agent_setup');
+      expect(out.instructions).toBe('You check suppliers.');
+      expect(out.tools).toEqual([
+        { name: 'Counterparty Check', kind: 'helper', what: 'Confirms a UK company exists.', max_price_usd: '0.05' },
+        { name: 'Briefpixel news', kind: 'data source', what: '', max_price_usd: '0.01' },
+        { name: 'Web page reader', kind: 'web', what: expect.any(String) },
+      ]);
+      expect(JSON.stringify(out)).not.toMatch(/zns:|cred-|11111111/);
+    });
+
+    it('get_agent_setup and edit_agent say so when the agent has no version yet', async () => {
+      bindState.workflowId = null;
+      expect((await call('get_agent_setup')).error).toMatch(/no version yet/);
+      expect((await call('edit_agent', { instructions: 'x' })).error).toMatch(/no version yet/);
+    });
+
+    it('edit_agent adds a helper the search found, saves it, and the result is usable', async () => {
+      const out = await call('edit_agent', { instructions: 'Check the supplier and screen its wallet.', add_helpers: [{ id: WALLET.entityId, input: 'json', fields: 'address' }] });
+      expect(out).toMatchObject({ saved: true, usable: true, problems: [] });
+      expect(out.tools.map((t: { name: string }) => t.name)).toEqual(['Counterparty Check', 'Briefpixel news', 'Web page reader', 'Wallet Risk Screener']);
+      expect(toolNames()).toContain('Wallet Risk Screener');
+      const read = checkWorkflow(mcp.workflow!, ctx);
+      expect(read).toEqual({ blocked: [], missing: [] });
+      expect(mcp.callsTo('update_workflow')[0]?.args).toMatchObject({ workflowId: 'wf-1', versionName: 'Changed by chat' });
+    });
+
+    it('edit_agent removes a tool by name and refuses one that is not there', async () => {
+      expect(await call('edit_agent', { remove: ['Briefpixel news'] })).toMatchObject({ saved: true });
+      expect(toolNames()).not.toContain('Briefpixel news');
+      const out = await call('edit_agent', { remove: ['Nope'] });
+      expect(out.error).toMatch(/no tool called "Nope"/);
+    });
+
+    it('edit_agent refuses helpers it was not shown, sources that are not offered, and empty or too long instructions', async () => {
+      expect((await call('edit_agent', { add_helpers: [{ id: 'zns:made-up', input: 'text' }] })).error).toMatch(/not a helper you found/);
+      expect((await call('edit_agent', { add_data_sources: ['Unknown'] })).error).toMatch(/Unknown data source/);
+      expect((await call('edit_agent', { instructions: '  ' })).error).toMatch(/empty/);
+      expect((await call('edit_agent', { instructions: 'x'.repeat(1501) })).error).toMatch(/too long/);
+      expect((await call('edit_agent', {})).error).toMatch(/Nothing to change/);
+      expect(mcp.callsTo('update_workflow')).toEqual([]);
+    });
+
+    it('a change makes "ready" wait for a new test, and state() tells the runner what happened', async () => {
+      mcp.executions.set('100', finishedRun({ answer: 'Fine.' }));
+      expect(tools.state()).toEqual({ changed: false, tested: false });
+      await call('test_agent', { question: 'a' });
+      expect(tools.state()).toEqual({ changed: false, tested: true });
+      await call('edit_agent', { web: false });
+      expect(tools.state()).toEqual({ changed: true, tested: false });
+      expect((await call('progress', { step: 'ready' })).error).toMatch(/Not ready yet/);
+      mcp.executions.set('101', finishedRun({ answer: 'Fine again.' }));
+      await call('test_agent', { question: 'b' });
+      expect(tools.state()).toEqual({ changed: true, tested: true });
+    });
+
+    it('a change through update_workflow counts too', async () => {
+      await call('update_workflow', { operations: [{ type: 'setNodeDisabled', nodeName: 'Web page reader', disabled: true }] });
+      expect(tools.state().changed).toBe(true);
+    });
+
+    it('update_preview on a built agent keeps its price: only the first build suggests one', async () => {
+      await call('update_preview', { name: 'Supplier Check 2', description: 'Checks suppliers.', suggested_price_usd: '0.50' });
+      expect(saved).toEqual([{ name: 'Supplier Check 2', summary: 'Checks suppliers.' }]);
     });
   });
 

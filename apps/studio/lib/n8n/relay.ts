@@ -5,6 +5,7 @@
 //   - after every create or update the workflow is read back and checked by `checkWorkflow`; the same check runs
 //     again right before a run or a publish, so nothing unchecked ever executes.
 // Publish, unpublish and archive are never offered to the model: Studio calls them itself from buttons.
+import { planEdit, currentInstructions, toolsOf, type AgentEdit, type ToolInfo } from '../builder/edit';
 import { NODE } from '../builder/template';
 import { checkWorkflow, type N8nNode, type N8nWorkflow, type PolicyContext, type PolicyResult } from './policy';
 import { parseExecution, parseRequest, toolKey, type RunView } from './runs';
@@ -52,6 +53,9 @@ const asWorkflow = (raw: unknown): N8nWorkflow => {
   if (!wf || !Array.isArray(wf.nodes)) throw new RelayRefusal('n8n did not return the workflow');
   return {
     ...(typeof wf.id === 'string' ? { id: wf.id } : {}),
+    ...(typeof wf.active === 'boolean' ? { active: wf.active } : {}),
+    ...(typeof wf.versionId === 'string' ? { versionId: wf.versionId } : {}),
+    ...(typeof wf.activeVersionId === 'string' || wf.activeVersionId === null ? { activeVersionId: wf.activeVersionId } : {}),
     nodes: wf.nodes as N8nNode[],
     ...(isObj(wf.connections) ? { connections: wf.connections as N8nWorkflow['connections'] } : {}),
     ...(isObj(wf.settings) ? { settings: wf.settings } : {}),
@@ -145,6 +149,38 @@ export class WorkflowRelay {
     // The edit is saved in the draft, but a workflow with anything not allowed is never run or published.
     if (r.blocked.length > 0) return { saved: true, usable: false, problems: r.blocked, next: 'Undo or fix these with update_workflow. The agent cannot run until they are gone.' };
     return { saved: true, usable: r.missing.length === 0, problems: r.missing };
+  }
+
+  /** What the agent does and the tools it has, as the builder may read them (no ids, no credential details). */
+  async setup(): Promise<{ instructions: string | null; tools: ToolInfo[] }> {
+    const wf = await this.details();
+    return { instructions: currentInstructions(wf), tools: toolsOf(wf) };
+  }
+
+  /**
+   * One change to the agent as a whole: new instructions, helpers or data sources to add, tools to take away. Studio
+   * writes the operations (ids, credentials, payment limits), n8n applies them atomically, and the result is checked.
+   */
+  async applyEdit(edit: AgentEdit, zyndCredentialName: string): Promise<{ result: unknown; tools: ToolInfo[] }> {
+    this.own();
+    const plan = planEdit(await this.details(), edit, {
+      listingId: this.ctx.listingId,
+      zyndCredential: { id: this.ctx.zyndCredentialId, name: zyndCredentialName },
+      maxCallPriceUsd: this.ctx.maxCallPriceUsd,
+    });
+    if (!plan.ok) throw new RelayRefusal(plan.error);
+    return { result: await this.update({ operations: plan.operations, versionName: 'Changed by chat' }), tools: plan.tools };
+  }
+
+  /**
+   * Whether this agent is turned on with a newer saved version than the one running: a change that has been made but
+   * is not live yet. `undefined` when n8n did not say.
+   */
+  async draftAhead(): Promise<boolean | undefined> {
+    const wf = await this.details();
+    if (wf.active !== true) return false;
+    if (!wf.versionId || wf.activeVersionId === undefined) return undefined;
+    return wf.versionId !== wf.activeVersionId;
   }
 
   /** Starts one chat run of this agent and returns its execution id. */

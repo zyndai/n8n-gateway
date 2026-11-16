@@ -72,19 +72,32 @@ const unique = (taken: Set<string>, base: string): string => {
   return name;
 };
 
+/** Where the standing parts of the AI step's system message start: an edit finds the person's own instructions by them. */
+export const TOOLS_MARK = '\n\nTools you can use: ';
+export const CLOSING = 'Answer in plain, short sentences a non-technical person can follow. Never invent facts: if a tool failed or returned nothing, say so.';
+const CLOSING_MARK = `\n\n${CLOSING}`;
+
+/** The AI step's system message from the agent's instructions and one line per tool (`Name (what it is)`). */
+export function composeSystemMessage(instructions: string, toolLines: string[]): string {
+  const lines = [instructions.trim()];
+  if (toolLines.length) lines.push(`Tools you can use: ${toolLines.join('; ')}. Only use a tool when it helps with this request.`);
+  lines.push(CLOSING);
+  return lines.join('\n\n');
+}
+
+/** The person's own instructions out of a system message made by {@link composeSystemMessage}. */
+export function instructionsOf(message: string): string {
+  const cuts = [message.indexOf(TOOLS_MARK), message.indexOf(CLOSING_MARK)].filter((i) => i >= 0);
+  return (cuts.length ? message.slice(0, Math.min(...cuts)) : message).trim();
+}
+
 /** The AI step's system message: the builder's instructions plus the facts only Studio knows. */
 export function systemMessage(i: Pick<TemplateInput, 'instructions' | 'helpers' | 'sources' | 'web'>): string {
-  const lines = [i.instructions.trim()];
-  const tools = [
+  return composeSystemMessage(i.instructions, [
     ...i.helpers.map((h) => `${h.name} (a helper agent: ${h.what})`),
     ...i.sources.map((s) => `${s.name} (a data source: ${s.what})`),
     ...(i.web ? ['Web page reader (public pages and APIs that need no key)'] : []),
-  ];
-  if (tools.length) lines.push(`Tools you can use: ${tools.join('; ')}. Only use a tool when it helps with this request.`);
-  lines.push(
-    'Answer in plain, short sentences a non-technical person can follow. Never invent facts: if a tool failed or returned nothing, say so.',
-  );
-  return lines.join('\n\n');
+  ]);
 }
 
 /** The SDK code for the whole agent. */

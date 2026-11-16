@@ -4,6 +4,7 @@ import { AgentError, type AgentService } from '../agents/service';
 import type { DataSource } from '../env';
 import type { OpenAIClient } from '../openai';
 import type { HelperCard } from '../registry';
+import type { WorkflowRelay } from '../n8n/relay';
 import { credentialName } from '../setup';
 import type { BuildEvent } from './events';
 import { instructionsFor } from './instructions';
@@ -49,6 +50,33 @@ function allowed(uid: string, now: number): boolean {
 export function resetBuildLimits(): void {
   busy.clear();
   recent.clear();
+}
+
+/**
+ * After a message on a live agent: if its saved version is ahead of the running one, publish it when a test has
+ * answered since the last change, otherwise leave the running version alone and say so. Never throws.
+ */
+async function settleLive(
+  relay: Pick<WorkflowRelay, 'draftAhead' | 'publish'>,
+  state: { changed: boolean; tested: boolean },
+  emit: (e: BuildEvent) => void,
+  log?: Pick<Console, 'warn' | 'error'>,
+): Promise<void> {
+  let ahead: boolean | undefined;
+  try {
+    ahead = await relay.draftAhead();
+  } catch (err) {
+    log?.warn(`builder: could not tell whether the live agent is behind: ${(err as Error)?.message ?? String(err)}`);
+  }
+  if (!(ahead ?? state.changed)) return;
+  if (!state.tested) return void emit({ type: 'live', state: 'held' });
+  try {
+    await relay.publish();
+    emit({ type: 'live', state: 'updated' });
+  } catch (err) {
+    log?.error(`builder: could not put a change live: ${(err as Error)?.message ?? String(err)}`);
+    emit({ type: 'live', state: 'failed' });
+  }
 }
 
 /** Runs one message. Never throws: whatever happens ends as an `error` or `done` event. */
@@ -106,6 +134,8 @@ export async function runBuild(
       ...(deps.log ? { log: deps.log } : {}),
       ...(deps.maxTurns ? { maxTurns: deps.maxTurns } : {}),
     });
+    // A live agent runs its published version; a tested change is put live now, an untested one is held back.
+    if (listing.status === 'ACTIVE' && relay.workflowId) await settleLive(relay, tools.state(), emit, deps.log);
     // Only a clean end hands back a pointer: an interrupted one may hold tool calls nobody answered.
     if (outcome.responseId) emit({ type: 'thread', token: signThread(deps.sessionSecret, session.uid, listing.id, outcome.responseId) });
     emit({ type: 'done' });

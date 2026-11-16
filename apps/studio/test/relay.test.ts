@@ -195,4 +195,51 @@ describe('WorkflowRelay', () => {
       expect(mcp.calls.map((c) => [c.name, c.args.workflowId])).toEqual([['unpublish_workflow', 'wf-1'], ['archive_workflow', 'wf-1']]);
     });
   });
+
+  describe('is a change live yet? (S4.1)', () => {
+    const state = (over: Record<string, unknown>) => {
+      withWorkflow();
+      Object.assign(mcp.workflow as object, over);
+    };
+    it('yes while a live agent has a newer saved version than the one running', async () => {
+      state({ active: true, versionId: 'v2', activeVersionId: 'v1' });
+      expect(await relay.draftAhead()).toBe(true);
+    });
+    it('no when the running version is the newest, or the agent is not turned on', async () => {
+      state({ active: true, versionId: 'v2', activeVersionId: 'v2' });
+      expect(await relay.draftAhead()).toBe(false);
+      state({ active: false, versionId: 'v2', activeVersionId: null });
+      expect(await relay.draftAhead()).toBe(false);
+    });
+    it('unknown when n8n does not say', async () => {
+      state({ active: true });
+      expect(await relay.draftAhead()).toBeUndefined();
+    });
+  });
+
+  describe('changing the agent as a whole (S4.1)', () => {
+    it('applies Studio\'s own operations atomically, with this agent\'s ids, and reports problems', async () => {
+      withWorkflow();
+      const { result, tools } = await relay.applyEdit({ web: false, instructions: 'Check suppliers.' }, 'Zynd · ada-x7k2');
+      expect(result).toEqual({ saved: true, usable: true, problems: [] });
+      expect(tools.map((t) => t.name)).toEqual(['Counterparty Check', 'Briefpixel news']);
+      const call = mcp.callsTo('update_workflow').at(-1)?.args as { workflowId: string; operations: { type: string }[] };
+      expect(call.workflowId).toBe('wf-1');
+      expect(call.operations.map((o) => o.type)).toEqual(['removeNode', 'setNodeParameter']);
+    });
+    it('refuses, with the reason, an edit the planner cannot make; nothing is sent to n8n', async () => {
+      withWorkflow();
+      await expect(relay.applyEdit({ remove: ['Nope'] }, 'Zynd · ada-x7k2')).rejects.toThrow(/no tool called "Nope"/);
+      expect(mcp.callsTo('update_workflow')).toEqual([]);
+    });
+    it('needs an agent that has a workflow', async () => {
+      await expect(relay.applyEdit({ web: false }, 'Zynd · ada-x7k2')).rejects.toThrow(/no workflow yet/);
+    });
+    it('reads the setup without ids', async () => {
+      withWorkflow();
+      const setup = await relay.setup();
+      expect(setup.instructions).toBe('You check suppliers.');
+      expect(setup.tools).toHaveLength(3);
+    });
+  });
 });

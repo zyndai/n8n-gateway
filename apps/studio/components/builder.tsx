@@ -2,6 +2,7 @@
 
 import { Check, Circle, Loader2, Send, Sparkles } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -10,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { decodeEvents, type BuildEvent, type BuildStep, BUILD_STEPS } from '@/lib/builder/events';
 import { apiMessage, copy } from '@/lib/copy';
 import { formatUsd } from '@/lib/format';
-import { SAMPLE_BUILD } from '@/lib/sample';
+import { SAMPLE_BUILD, SAMPLE_EDIT } from '@/lib/sample';
 import { useStoredText } from '@/lib/use-stored';
 import type { BuilderMode, Helper } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -35,6 +36,10 @@ interface Saved {
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** An error whose text is already plain words, so it may be shown as it is. Anything else becomes a generic line. */
+class PlainError extends Error {}
+const plainOf = (err: unknown): string => (err instanceof PlainError ? err.message : err instanceof TypeError ? copy.errors.network : copy.errors.generic);
 const storeKey = (agentId: string) => `studio.build.${agentId}`;
 
 function parseSaved(raw: string | null | undefined): Saved | null {
@@ -51,19 +56,22 @@ function parseSaved(raw: string | null | undefined): Saved | null {
 /**
  * The Create agent screen. In preview it plays a short scripted build with sample content, so the look and the flow
  * can be judged. In live mode the first message creates the agent, then the builder works on it and streams back.
+ * With `editing` it is the Make changes tab of an agent that already exists: the same chat, with the progress list
+ * only, since the agent's own page already shows its name and what it does.
  */
-export function Builder(props: { mode: BuilderMode; agentId?: string; initialIdea?: string }) {
+export function Builder(props: { mode: BuilderMode; agentId?: string; initialIdea?: string; editing?: { live: boolean } }) {
   // Come back to the same conversation after a reload (kept in this browser, per agent).
   const raw = useStoredText(props.mode === 'live' && props.agentId ? storeKey(props.agentId) : null);
   if (raw === undefined) return <div className="h-[28rem] animate-pulse rounded-xl border bg-card" aria-hidden />;
   return <BuilderView {...props} saved={parseSaved(raw)} />;
 }
 
-function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mode: BuilderMode; agentId?: string; initialIdea?: string; saved: Saved | null }) {
+function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, saved }: { mode: BuilderMode; agentId?: string; initialIdea?: string; editing?: { live: boolean }; saved: Saved | null }) {
+  const router = useRouter();
   const [messages, setMessages] = useState<Msg[]>(saved?.messages ?? []);
   const [input, setInput] = useState(initialIdea ?? '');
   const [draft, setDraft] = useState<Draft>(saved?.draft ?? { helpers: [] });
-  const [step, setStep] = useState(saved?.step ?? 0); // 0 not started; 1..4 = the step in progress; 5 = all done
+  const [step, setStep] = useState(editing ? 0 : (saved?.step ?? 0)); // 0 not started; 1..4 = the step in progress; 5 = all done
   const [thinking, setThinking] = useState(false);
   const [agentId, setAgentId] = useState<string | undefined>(initialAgentId);
   const [thread, setThread] = useState<string | null>(saved?.thread ?? null);
@@ -121,6 +129,23 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
     say({ role: 'agent', text: copy.create.ready });
   }
 
+  /** Scripted change for preview mode (Make changes tab). */
+  async function sendDemoEdit(text: string) {
+    say({ role: 'user', text });
+    setThinking(true);
+    await wait(700);
+    if (!alive.current) return;
+    setThinking(false);
+    for (let s = 2; s <= 4; s++) {
+      if (!alive.current) return;
+      setStep(s);
+      await wait(1000);
+    }
+    if (!alive.current) return;
+    setStep(5);
+    say({ role: 'agent', text: SAMPLE_EDIT.reply });
+  }
+
   /** The real thing: make the agent on the first message, then stream the builder's work. */
   async function sendLive(text: string) {
     say({ role: 'user', text });
@@ -131,7 +156,7 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
       if (!id) {
         const res = await fetch('/api/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         const body = (await res.json().catch(() => ({}))) as { id?: string; error?: string; credit?: { status: string; amountUsd?: string; reason?: string } };
-        if (!res.ok || !body.id) throw new Error(apiMessage(body.error));
+        if (!res.ok || !body.id) throw new PlainError(apiMessage(body.error));
         id = body.id;
         setAgentId(id);
         window.history.replaceState(null, '', `/agents/new?agent=${encodeURIComponent(id)}`);
@@ -146,11 +171,12 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
       });
       if (!res.ok || !res.body) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(apiMessage(body.error));
+        throw new PlainError(apiMessage(body.error));
       }
 
       // The agent's reply grows in one bubble as text arrives.
       let started = false;
+      let ended = false; // the stream said it was finished (done or error)
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -177,7 +203,15 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
           case 'thread':
             setThread(e.token);
             break;
+          case 'live':
+            say({ role: 'agent', text: copy.edit.live[e.state] });
+            if (e.state === 'updated') toast.success(copy.edit.live.updated);
+            break;
+          case 'done':
+            ended = true;
+            break;
           case 'error':
+            ended = true;
             setThinking(false);
             say({ role: 'agent', text: e.message });
             break;
@@ -191,10 +225,14 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
         buf = rest;
         events.forEach(apply);
       }
+      // A stream that stops without saying it is finished was cut off (for example by a timeout).
+      if (!ended) say({ role: 'agent', text: copy.errors.cutOff });
     } catch (err) {
-      say({ role: 'agent', text: err instanceof Error && err.message ? err.message : copy.errors.generic });
+      say({ role: 'agent', text: plainOf(err) });
     } finally {
       if (alive.current) setThinking(false);
+      // What the agent is called and what it does may have changed: the page above the chat shows them.
+      if (editing && id) router.refresh();
     }
   }
 
@@ -203,26 +241,29 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
     if (!text || thinking || mode === 'off') return;
     if (demo && step > 0) return;
     setInput('');
-    if (demo) await sendDemo(text);
+    if (demo) await (editing ? sendDemoEdit(text) : sendDemo(text));
     else await sendLive(text);
   }
 
   const done = step === 5;
   const empty = !draft.name && !draft.does && draft.helpers.length === 0;
   const locked = mode === 'off' || (demo && step > 0);
+  const stepLabels = editing ? copy.edit.steps : copy.create.steps;
+  const chatTitle = editing ? copy.edit.chatTitle : copy.create.chatTitle;
+  const placeholder = editing ? copy.edit.placeholder : done && live ? copy.create.continueHint : copy.create.placeholder;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-      <Card className="flex h-[min(36rem,calc(100vh-11rem))] min-h-[28rem] flex-col gap-0 py-0 shadow-none">
+      <Card className={cn('flex min-h-[24rem] flex-col gap-0 py-0 shadow-none', editing ? 'h-[min(34rem,calc(100vh-17rem))]' : 'h-[min(36rem,calc(100vh-11rem))] min-h-[28rem]')}>
         <CardHeader className="gap-0 border-b px-5 py-4">
-          <CardTitle className="text-[15px]">{copy.create.chatTitle}</CardTitle>
+          <CardTitle className="text-[15px]">{chatTitle}</CardTitle>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col px-0">
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5" aria-live="polite">
             {mode === 'off' ? (
               <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{copy.create.notReady}</p>
             ) : messages.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{copy.create.placeholder}</p>
+              <p className="text-sm text-muted-foreground">{editing ? (editing.live ? copy.edit.introLive : copy.edit.intro) : copy.create.placeholder}</p>
             ) : null}
             {messages.map((m, i) => (
               <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
@@ -255,8 +296,8 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
                   void send();
                 }
               }}
-              placeholder={done && live ? copy.create.continueHint : copy.create.placeholder}
-              aria-label={copy.create.chatTitle}
+              placeholder={placeholder}
+              aria-label={chatTitle}
               rows={2}
               maxLength={2000}
               disabled={locked}
@@ -266,7 +307,7 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
               <Send aria-hidden />
             </Button>
           </form>
-          {demo && asked === 1 && step === 0 && !thinking ? (
+          {demo && !editing && asked === 1 && step === 0 && !thinking ? (
             <div className="border-t px-3 py-2">
               <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setInput(SAMPLE_BUILD.followUp)}>
                 <Sparkles aria-hidden />
@@ -274,85 +315,97 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, saved }: { mo
               </Button>
             </div>
           ) : null}
+          {demo && editing && asked === 0 && !thinking ? (
+            <div className="border-t px-3 py-2">
+              <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setInput(SAMPLE_EDIT.suggestion)}>
+                <Sparkles aria-hidden />
+                {SAMPLE_EDIT.suggestion}
+              </Button>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
       <div className="space-y-6">
-        <Card className="gap-0 py-0 shadow-none">
-          <CardHeader className="gap-0 border-b px-5 py-4">
-            <CardTitle className="text-[15px]">{copy.create.previewTitle}</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-5 px-5 py-5">
-            {empty ? (
-              <p className="text-sm text-muted-foreground">{copy.create.previewEmpty}</p>
-            ) : (
-              <>
-                <Field label={copy.create.nameLabel}>{draft.name ?? <Pending />}</Field>
-                <Field label={copy.create.doesLabel}>{draft.does ?? <Pending />}</Field>
-                <Field label={copy.create.helpersLabel}>
-                  {draft.helpers.length === 0 ? (
-                    <span className="text-muted-foreground">{copy.create.helpersNone}</span>
-                  ) : (
-                    <ul className="space-y-2">
-                      {draft.helpers.map((h) => (
-                        <li key={h.name} className="flex items-start justify-between gap-3">
-                          <span>
-                            <span className="block font-medium">{h.name}</span>
-                            <span className="block text-xs text-muted-foreground">{h.what}</span>
-                          </span>
-                          <span className="tabular-nums">{formatUsd(h.priceUsd)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </Field>
-                <Field label={copy.create.costLabel}>
-                  {draft.costUsd ? (
-                    <>
-                      <span className="font-medium tabular-nums">{formatUsd(draft.costUsd)}</span>
-                      <span className="mt-0.5 block text-xs text-muted-foreground">{copy.create.costNote}</span>
-                    </>
-                  ) : (
-                    <Pending />
-                  )}
-                </Field>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="gap-0 py-0 shadow-none">
-          <CardHeader className="gap-0 border-b px-5 py-4">
-            <CardTitle className="text-[15px]">{copy.create.stepsTitle}</CardTitle>
-          </CardHeader>
-          <CardContent className="px-5 py-5">
-            <ol className="space-y-3">
-              {copy.create.steps.map((label, i) => {
-                const n = i + 1;
-                const state = step > n || step === 5 ? 'done' : step === n ? 'active' : 'todo';
-                return (
-                  <li key={label} className="flex items-center gap-3 text-sm" aria-current={state === 'active' ? 'step' : undefined}>
-                    {state === 'done' ? (
-                      <span className="grid size-5 place-items-center rounded-full bg-success text-white">
-                        <Check className="size-3" aria-hidden />
-                      </span>
-                    ) : state === 'active' ? (
-                      <Loader2 className="size-5 animate-spin text-primary" aria-hidden />
+        {editing ? null : (
+          <Card className="gap-0 py-0 shadow-none">
+            <CardHeader className="gap-0 border-b px-5 py-4">
+              <CardTitle className="text-[15px]">{copy.create.previewTitle}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5 px-5 py-5">
+              {empty ? (
+                <p className="text-sm text-muted-foreground">{copy.create.previewEmpty}</p>
+              ) : (
+                <>
+                  <Field label={copy.create.nameLabel}>{draft.name ?? <Pending />}</Field>
+                  <Field label={copy.create.doesLabel}>{draft.does ?? <Pending />}</Field>
+                  <Field label={copy.create.helpersLabel}>
+                    {draft.helpers.length === 0 ? (
+                      <span className="text-muted-foreground">{copy.create.helpersNone}</span>
                     ) : (
-                      <Circle className="size-5 text-muted-foreground/40" aria-hidden />
+                      <ul className="space-y-2">
+                        {draft.helpers.map((h) => (
+                          <li key={h.name} className="flex items-start justify-between gap-3">
+                            <span>
+                              <span className="block font-medium">{h.name}</span>
+                              <span className="block text-xs text-muted-foreground">{h.what}</span>
+                            </span>
+                            <span className="tabular-nums">{formatUsd(h.priceUsd)}</span>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                    <span className={cn(state === 'todo' ? 'text-muted-foreground' : 'font-medium')}>{label}</span>
-                  </li>
-                );
-              })}
-            </ol>
-            {done ? (
-              <Button asChild className="mt-5 w-full">
-                <Link href={demo ? '/agents/sample-supplier-check' : `/agents/${agentId ?? ''}`}>{copy.create.open}</Link>
-              </Button>
-            ) : null}
-          </CardContent>
-        </Card>
+                  </Field>
+                  <Field label={copy.create.costLabel}>
+                    {draft.costUsd ? (
+                      <>
+                        <span className="font-medium tabular-nums">{formatUsd(draft.costUsd)}</span>
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{copy.create.costNote}</span>
+                      </>
+                    ) : (
+                      <Pending />
+                    )}
+                  </Field>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {editing && step === 0 && !thinking ? null : (
+          <Card className="gap-0 py-0 shadow-none">
+            <CardHeader className="gap-0 border-b px-5 py-4">
+              <CardTitle className="text-[15px]">{copy.create.stepsTitle}</CardTitle>
+            </CardHeader>
+            <CardContent className="px-5 py-5">
+              <ol className="space-y-3">
+                {stepLabels.map((label, i) => {
+                  const n = i + 1;
+                  const state = step > n || step === 5 ? 'done' : step === n ? 'active' : 'todo';
+                  return (
+                    <li key={label} className="flex items-center gap-3 text-sm" aria-current={state === 'active' ? 'step' : undefined}>
+                      {state === 'done' ? (
+                        <span className="grid size-5 place-items-center rounded-full bg-success text-white">
+                          <Check className="size-3" aria-hidden />
+                        </span>
+                      ) : state === 'active' ? (
+                        <Loader2 className="size-5 animate-spin text-primary" aria-hidden />
+                      ) : (
+                        <Circle className="size-5 text-muted-foreground/40" aria-hidden />
+                      )}
+                      <span className={cn(state === 'todo' ? 'text-muted-foreground' : 'font-medium')}>{label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+              {done && !editing ? (
+                <Button asChild className="mt-5 w-full">
+                  <Link href={demo ? '/agents/sample-supplier-check' : `/agents/${agentId ?? ''}`}>{copy.create.open}</Link>
+                </Button>
+              ) : null}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );
