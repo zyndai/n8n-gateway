@@ -128,6 +128,27 @@ describe('WorkflowRelay', () => {
     });
   });
 
+  describe('saveAgent (S5.1)', () => {
+    const spec = { instructions: 'Check suppliers.', helpers: [], sources: [], web: false };
+    it('refuses when Studio has no way to write workflows', async () => {
+      await expect(relay.saveAgent(spec)).rejects.toThrow(/cannot save agents/);
+    });
+    it('checks the agent before writing anything, so an unsafe one never reaches n8n', async () => {
+      relay = new WorkflowRelay(mcp, bind, ctx, mcp.writer());
+      const offShelf = { name: 'Secret DB', listingUrl: 'https://internal.example/', operation: 'dump', what: 'x', maxPriceUsd: '0.01' };
+      const err = await relay.saveAgent({ ...spec, sources: [offShelf] }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(RelayRefusal);
+      expect((err as RelayRefusal).problems.join()).toMatch(/offered data sources/);
+      expect(mcp.calls).toEqual([]);
+    });
+    it('creates, remembers and tags a new agent', async () => {
+      relay = new WorkflowRelay(mcp, bind, ctx, mcp.writer());
+      expect(await relay.saveAgent(spec)).toMatchObject({ created: true, problems: [] });
+      expect(bind.saved).toEqual(['wf-1']);
+      expect(mcp.callsTo('update_workflow').at(-1)?.args.operations).toEqual([{ type: 'addTags', names: ['zynd-studio'] }]);
+    });
+  });
+
   describe('updating', () => {
     it('reads the workflow back and reports a problem it introduced, without throwing', async () => {
       withWorkflow();

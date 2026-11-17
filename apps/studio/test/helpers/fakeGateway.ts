@@ -8,6 +8,8 @@ export class FakeGateway implements GatewayClient {
   /** What `activateListing` leaves the listing as. */
   activateAs = 'ACTIVE';
   walletFails = false;
+  /** What each agent's own wallet holds. */
+  listingBalanceUsd = '0';
   calls: string[] = [];
   private n = 0;
   developers: string[] = [];
@@ -71,7 +73,7 @@ export class FakeGateway implements GatewayClient {
       analytics: async () => this.totals,
       wallet: async (): Promise<WalletView> => {
         if (this.walletFails) throw new GatewayError('chain down', 502, 'GATEWAY_UNAVAILABLE');
-        return { payer: '0x90eba483ad984DeC6F0416e23fe68F138a015583', payerBalanceUsd: '0', listings: this.listings.map((l, i) => ({ listingId: l.id, name: l.name, address: `0x${(i + 1).toString(16).padStart(40, '0')}`, balanceUsd: '0' })) };
+        return { payer: '0x90eba483ad984DeC6F0416e23fe68F138a015583', payerBalanceUsd: '0', listings: this.listings.map((l, i) => ({ listingId: l.id, name: l.name, address: `0x${(i + 1).toString(16).padStart(40, '0')}`, balanceUsd: this.listingBalanceUsd })) };
       },
       listApiKeys: async () => [],
       createApiKey: async () => Promise.reject(new Error('not used')),

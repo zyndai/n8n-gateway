@@ -268,6 +268,8 @@ As of 2026-11-16. **S0 to S4 are built and tested locally, except S4.4 (the rehe
 | S4.2 Plain errors | ✅ | A page that cannot load shows `error.tsx` / `global-error.tsx` (plain words and **Try again**), and an outage on the agent page is no longer shown as "that page does not exist". Activity that cannot be read says so instead of "Nothing here yet". A dropped connection reads "We could not reach Studio…" and a builder stream that stops without finishing reads "This was interrupted…" (before, the first showed the browser's own "Failed to fetch" and the second nothing). A service being down has its own message; out of credit now says what to do (there are no top-ups yet). `test/copy.test.ts` fails if any string in `lib/copy.ts` uses a technical word (listing, wallet, workflow, n8n, x402, API key, token, JSON, gateway…), if an error code has no plain message, if a server message could pass through, or if a screen prints an error's own message |
 | S4.3 Demo script | ✅ written, ⏳ not rehearsed | [STUDIO_DEMO.md](STUDIO_DEMO.md): checklist, seven acts, a table for what goes wrong, clean-up between runs, and an empty rehearsal log. Only two timings are measured (a chat run without paid helpers, 5 to 9 s); the rest are targets, marked as such |
 | S4.4 Rehearsal | ⬜ needs the server | Two runs in a row on the live server, without touching n8n or a terminal. Needs everything under "Needs the owner" |
+| S5.0 Credential fix | ✅ real n8n | Every real build failed: n8n's create-from-code gave the Zynd steps the first `zyndApi` credential it found, and the guard archived the workflow. The relay now sets both credentials itself (`credentialFixes`, `pinCredentials`) after every create or update, before the check. The REST-vs-MCP spike is under "n8n findings for S5" |
+| S5.1 Studio writes the agent | ✅ real n8n, ⏳ the 90% eval (S5.4) | The model no longer writes workflow code or raw n8n operations: its tools are `find_helpers`, `list_data_sources`, `update_preview`, **`build_agent`**, `get_agent_setup`, `edit_agent`, `test_agent`, `progress`. `build_agent` takes what the agent is (instructions, helpers, data sources, web) and Studio renders the whole workflow as JSON (`lib/builder/workflow-json.ts`, sharing the tool-step builders with `edit.ts`), checks it **before** writing, writes it with n8n's REST API (create, or replace with `publishIfActive=false`, keeping n8n's ids so a live trigger keeps its webhook), sets credentials, reads it back and checks again. A helper's input type comes from its agent card (`inputModes`) when the card says. **Repairs by Studio:** a helper that did not answer is switched to the other input type and tested again; if the agent still gives no answer, the helper is left out and the agent tested once more; the model is told what changed. **Before the first test** an agent whose wallet cannot pay its cheapest tool is not run. Turns 16 → 10, test wait 150 → 240 s. One `builder.outcome` JSON line per message in the server log (outcome, cause, turns, tests, repairs, seconds). Checked on the real n8n (2026-11-17): a rendered agent created over REST passed the read-back check with both credentials right and answered its chat test; archived after |
 
 **Exit gates.** S0 needs the owner's sign-off on the look and an answer for every S0.5 check; (e), (g) and the REST half of (c) are still open. S1: reproduced locally with a fake Supabase, fake n8n and fake registry around the real Gateway: a new Google user lands on an empty Agents page; its developer, key and credential exist; signing in again changes nothing. Not yet shown with real Google, Supabase and n8n.
 
@@ -384,6 +386,7 @@ n8n findings for S5 (2026-11-17, REST API v1.1.1, throwaway workflows archived):
 | [S2 — Agent builder](#s2--agent-builder) | Chat turns an idea into a tested draft agent | Three different ideas each become a working draft with no manual help |
 | [S3 — Use, publish, my agents](#s3--use-publish-my-agents) | Agents can be used, published, paused and deleted from the app | User A publishes an agent; user B's agent hires and pays it; A sees the earning |
 | [S4 — Edit by chat and demo readiness](#s4--edit-by-chat-and-demo-readiness) | Changes by chat, plain error handling, a rehearsed demo | The demo script ([STUDIO_DEMO.md](STUDIO_DEMO.md)) runs twice in a row on the live server without touching n8n or a terminal |
+| [S5 — Reliable builds, in the background, shown live](#s5--reliable-builds-in-the-background-shown-live) | Builds that work, survive a reload, and show the agent taking shape | 27 of 30 eval ideas reach "ready", twice in a row |
 
 ### S0 — Foundations
 
@@ -435,6 +438,16 @@ State: ✅ done and tested · ⏳ built, part still open (see [Still open](#stil
 | S4.2 ✅ | Plain-language errors and empty states throughout: out of credit, helper failed, took too long, nothing here yet | No raw error text or code reaches the UI in the demo script |
 | S4.3 ⏳ | Demo script: a fresh account rebuilds the due-diligence agent by chat, tries it, publishes it; a second account's agent hires it | The script is written down with expected timings (timings are targets until the rehearsal) |
 | S4.4 ⬜ | Rehearsal on the live server: platform wallet topped up, showcase helpers live and funded, two demo accounts ready | The script runs twice in a row without touching n8n or a terminal |
+
+### S5 — Reliable builds, in the background, shown live
+
+| Step | What | Done when |
+| --- | --- | --- |
+| S5.0 ✅ | Studio sets agents' credentials itself; REST vs MCP spike | A real build is no longer archived for a foreign credential |
+| S5.1 ✅ | `build_agent`: Studio renders and writes the whole agent (REST), repairs helpers that do not answer, checks credit before testing; the raw n8n tools leave the model's list | The model never writes workflow code; unit tests cover each repair |
+| S5.2 | Builds run as background jobs: a reload or a closed tab does not stop them, and the screen reattaches | Reload mid-build: the progress picks up where it was and finishes |
+| S5.3 | The agent's parts appear and come alive while it is built and tested, with a plain activity feed | "Working on it…" is gone; every step the builder takes shows |
+| S5.4 | An eval of 30 fixed ideas against the real services | At least 27 of 30 reach "ready" on two runs in a row |
 
 ---
 

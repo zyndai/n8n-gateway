@@ -4,6 +4,7 @@ import { createTreasury } from './credit/starter';
 import { builderConfigured, builderEnv, creditEnv, studioEnv } from './env';
 import { createGatewayClient } from './gateway/client';
 import { N8nMcp } from './n8n/mcp';
+import { restWorkflowWriter } from './n8n/rest';
 import { OpenAIClient } from './openai';
 import { Registry } from './registry';
 import type { StudioSession } from './session-cookie';
@@ -56,6 +57,7 @@ function build(): Shared {
   const registry = new Registry({ agentDnsUrl: b.agentDnsUrl, maxCallPriceUsd: b.maxCallPriceUsd });
   const deps: Shared['deps'] = {
     mcp,
+    workflows: restWorkflowWriter({ apiUrl: env.n8nApiUrl, apiKey: env.n8nApiKey }),
     findCredentialId: (type, name) =>
       cached(`${type}|${name}`, async () => {
         const found = await mcp.findCredentials(type, name);

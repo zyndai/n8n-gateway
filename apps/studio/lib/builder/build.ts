@@ -2,7 +2,7 @@
 // loop and stream the events. The HTTP route only turns the emitted events into a response body.
 import { AgentError, type AgentService } from '../agents/service';
 import type { DataSource } from '../env';
-import type { OpenAIClient } from '../openai';
+import { OpenAIError, type OpenAIClient } from '../openai';
 import type { HelperCard } from '../registry';
 import type { WorkflowRelay } from '../n8n/relay';
 import { credentialName } from '../setup';
@@ -13,15 +13,13 @@ import { signThread, verifyThread } from './thread';
 import { createBuilderTools } from './tools';
 
 export interface BuildDeps {
-  agents: Pick<AgentService, 'load' | 'relayFor' | 'saveSettings' | 'session'>;
+  agents: Pick<AgentService, 'load' | 'relayFor' | 'saveSettings' | 'session'> & Partial<Pick<AgentService, 'walletBalance'>>;
   registry: { search(query: string, limit?: number): Promise<HelperCard[]>; lookup(entityId: string): HelperCard | undefined };
   openai: Pick<OpenAIClient, 'turn'>;
   builderModel: string;
-  agentModel: string;
   dataSources: DataSource[];
   sessionSecret: string;
-  openAiCredentialName(): Promise<string>;
-  log?: Pick<Console, 'warn' | 'error'>;
+  log?: Pick<Console, 'info' | 'warn' | 'error'>;
   /** Passed to the tools: tests make runs and polling instant. */
   tools?: { pollMs?: number; testTimeoutMs?: number; maxTests?: number; sleep?: (ms: number) => Promise<void> };
   maxTurns?: number;
@@ -102,21 +100,24 @@ export async function runBuild(
     return;
   }
   busy.add(key);
+  const started = (deps.now ?? Date.now)();
+  let tools: ReturnType<typeof createBuilderTools> | undefined;
+  let turns = 0;
+  let cause: string | undefined;
   try {
     const listing = await deps.agents.load(input.agentId);
     const relay = await deps.agents.relayFor(listing);
     const previous = verifyThread(deps.sessionSecret, session.uid, listing.id, input.thread) ?? undefined;
     const current = { id: listing.id, name: listing.name };
 
-    const tools = createBuilderTools({
+    tools = createBuilderTools({
       listing: current,
       save: (patch) => deps.agents.saveSettings(listing.id, patch),
       relay,
       registry: deps.registry,
       dataSources: deps.dataSources,
-      agentModel: deps.agentModel,
       zyndCredentialName: credentialName(session.handle),
-      openAiCredentialName: await deps.openAiCredentialName(),
+      ...(deps.agents.walletBalance ? { balance: () => (deps.agents.walletBalance as AgentService['walletBalance'])(listing.id) } : {}),
       emit,
       ...(deps.log ? { log: deps.log } : {}),
       ...deps.tools,
@@ -134,12 +135,15 @@ export async function runBuild(
       ...(deps.log ? { log: deps.log } : {}),
       ...(deps.maxTurns ? { maxTurns: deps.maxTurns } : {}),
     });
+    turns = outcome.turns;
+    if (!outcome.finished) cause = 'turn-limit';
     // A live agent runs its published version; a tested change is put live now, an untested one is held back.
     if (listing.status === 'ACTIVE' && relay.workflowId) await settleLive(relay, tools.state(), emit, deps.log);
     // Only a clean end hands back a pointer: an interrupted one may hold tool calls nobody answered.
     if (outcome.responseId) emit({ type: 'thread', token: signThread(deps.sessionSecret, session.uid, listing.id, outcome.responseId) });
     emit({ type: 'done' });
   } catch (err) {
+    cause = (err as Error)?.name === 'AbortError' ? 'stopped' : err instanceof OpenAIError ? `openai-${err.kind}` : 'error';
     if ((err as Error)?.name === 'AbortError') return;
     if (err instanceof AgentError && err.code === 'not-found') emit({ type: 'error', message: 'We could not find that agent.' });
     else {
@@ -148,5 +152,20 @@ export async function runBuild(
     }
   } finally {
     busy.delete(key);
+    // One line per message, so the real success rate can be read from the logs (S5.1).
+    const s = tools?.state();
+    const outcome = s?.ready ? 'ready' : s?.noCredit ? 'no-credit' : s?.changed || s?.tests ? 'unfinished' : 'talk';
+    deps.log?.info?.(
+      JSON.stringify({
+        event: 'builder.outcome',
+        agent: input.agentId,
+        outcome,
+        ...(cause ?? s?.lastFailure ? { cause: cause ?? s?.lastFailure } : {}),
+        turns,
+        tests: s?.tests ?? 0,
+        repairs: s?.repairs ?? 0,
+        seconds: Math.round(((deps.now ?? Date.now)() - started) / 1000),
+      }),
+    );
   }
 }

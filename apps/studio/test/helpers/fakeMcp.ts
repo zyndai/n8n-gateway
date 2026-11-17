@@ -1,5 +1,6 @@
 import type { McpLike } from '../../lib/n8n/relay';
 import { McpError } from '../../lib/n8n/mcp';
+import { N8nError, type WorkflowWriter } from '../../lib/n8n/rest';
 import type { N8nWorkflow } from '../../lib/n8n/policy';
 import { applyOps } from './applyOps';
 import { goodWorkflow } from './readback';
@@ -24,6 +25,28 @@ export class FakeMcp implements McpLike {
   executeReply: ((args: Record<string, unknown>) => unknown) | undefined;
   failTool: Record<string, string> = {};
   searchResults: unknown = { data: [] };
+
+  /** n8n's REST API for whole workflows, writing into the same one workflow. Calls are logged as `rest:create` and `rest:replace`. */
+  writer(): WorkflowWriter {
+    return {
+      create: async (body) => {
+        this.calls.push({ name: 'rest:create', args: body as unknown as Record<string, unknown> });
+        if (this.failTool['rest:create']) throw new N8nError(this.failTool['rest:create'] as string, 400);
+        this.workflow = { ...(structuredClone(body) as unknown as N8nWorkflow), id: 'wf-1', active: false, versionId: 'v1', activeVersionId: null };
+        this.onCreate?.(this.workflow);
+        return 'wf-1';
+      },
+      replace: async (id, body) => {
+        this.calls.push({ name: 'rest:replace', args: { id, ...(body as unknown as Record<string, unknown>) } });
+        if (this.failTool['rest:replace']) throw new N8nError(this.failTool['rest:replace'] as string, 400);
+        const before = this.workflow;
+        // A live workflow keeps running its published version (`publishIfActive=false`).
+        this.workflow = { ...(structuredClone(body) as unknown as N8nWorkflow), id, active: before?.active ?? false, versionId: `v${++this.versions}`, activeVersionId: before?.activeVersionId ?? null };
+      },
+    };
+  }
+  /** Runs on the workflow right after a REST create, as n8n might change it. */
+  onCreate: ((wf: N8nWorkflow) => void) | undefined;
 
   callsTo(name: string): Call[] {
     return this.calls.filter((c) => c.name === name);

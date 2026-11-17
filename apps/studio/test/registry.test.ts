@@ -38,6 +38,22 @@ describe('Registry.search', () => {
     expect(JSON.parse(String(f.calls[0]?.init?.body))).toMatchObject({ query: 'company check' });
   });
 
+  it('reads what each helper takes in from its card, and ignores modes Studio cannot send', async () => {
+    const a = hit('aaaa');
+    const b = hit('bbbb');
+    const c = hit('cccc');
+    const f = fakeFetch({
+      results: [a, b, c],
+      cards: {
+        [cardOf(a)]: { ...card(0.05), skills: [{ inputModes: ['text/plain', 'application/json'] }] },
+        [cardOf(b)]: { ...card(0.05), defaultInputModes: ['application/json', 'image/png'] },
+        [cardOf(c)]: card(0.05),
+      },
+    });
+    const found = await registry(f).search('x');
+    expect(found.map((h) => h.inputModes)).toEqual([['text/plain', 'application/json'], ['application/json'], undefined]);
+  });
+
   it('leaves out agents that are not active, not agents, unpriced, unreachable or too dear', async () => {
     const ok = hit('okok');
     const inactive = hit('dead', { status: 'inactive' });

@@ -11,6 +11,8 @@ export interface HelperCard {
   category: string;
   /** Price per use, a decimal string. */
   priceUsd: string;
+  /** What its card says it takes in (`text/plain`, `application/json`), when it says. */
+  inputModes?: string[];
 }
 
 export interface RegistryConfig {
@@ -125,12 +127,16 @@ export class Registry {
       const rate = isObj(card) && isObj(card['x-zynd']) && isObj(card['x-zynd'].pricing) && isObj(card['x-zynd'].pricing.rates) ? card['x-zynd'].pricing.rates.default : undefined;
       const price = typeof rate === 'number' ? rate : typeof rate === 'string' ? Number(rate) : NaN;
       if (!Number.isFinite(price) || price < 0) return null;
+      const skill = isObj(card) && Array.isArray(card.skills) && isObj(card.skills[0]) ? card.skills[0] : undefined;
+      const modesRaw = Array.isArray(skill?.inputModes) ? skill.inputModes : isObj(card) && Array.isArray(card.defaultInputModes) ? card.defaultInputModes : [];
+      const inputModes = modesRaw.filter((m): m is string => m === 'text/plain' || m === 'application/json');
       const out: HelperCard = {
         entityId: h.entity_id as string,
         name: plainText(h.name, 80),
         what: plainText(h.summary, 300),
         category: plainText(h.category, 40),
         priceUsd: priceText(price),
+        ...(inputModes.length ? { inputModes } : {}),
       };
       this.remember(out);
       return out;

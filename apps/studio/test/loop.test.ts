@@ -6,7 +6,7 @@ import { OpenAIError } from '@/lib/openai';
 import { FakeModel, outputsOf } from './helpers/fakeOpenAI';
 
 const tools = (run: BuilderTools['run'] = async (name) => JSON.stringify({ ran: name })): BuilderTools & { ran: string[] } => {
-  const t = { specs: [{ type: 'function' as const, name: 'a', description: 'd', parameters: {} }], state: () => ({ changed: false, tested: false }), ran: [] as string[], run: async (n: string, a: string) => (t.ran.push(`${n}(${a})`), run(n, a)) };
+  const t = { specs: [{ type: 'function' as const, name: 'a', description: 'd', parameters: {} }], state: () => ({ changed: false, tested: false, ready: false, tests: 0, repairs: 0, noCredit: false }), ran: [] as string[], run: async (n: string, a: string) => (t.ran.push(`${n}(${a})`), run(n, a)) };
   return t;
 };
 const base = (model: FakeModel, t: BuilderTools, events: BuildEvent[], over = {}) => ({ openai: model, model: 'm', instructions: 'i', tools: t, userText: 'Check suppliers', emit: (e: BuildEvent) => void events.push(e), ...over });
@@ -16,7 +16,7 @@ describe('runBuilder', () => {
     const events: BuildEvent[] = [];
     const model = new FakeModel([{ text: 'Hello there' }]);
     const out = await runBuilder(base(model, tools(), events));
-    expect(out).toEqual({ responseId: 'resp_1', finished: true });
+    expect(out).toEqual({ responseId: 'resp_1', finished: true, turns: 1 });
     expect(events.filter((e) => e.type === 'text').map((e) => (e as { delta: string }).delta).join('')).toBe('Hello there');
     expect(model.requests[0]).toMatchObject({ model: 'm', instructions: 'i', input: [{ role: 'user', content: 'Check suppliers' }] });
     expect(model.requests[0]?.previousResponseId).toBeUndefined();
@@ -33,7 +33,7 @@ describe('runBuilder', () => {
       { id: 'call_1_0', output: { ran: 'find_helpers' } },
       { id: 'call_1_1', output: { ran: 'list_data_sources' } },
     ]);
-    expect(out).toEqual({ responseId: 'resp_2', finished: true });
+    expect(out).toEqual({ responseId: 'resp_2', finished: true, turns: 2 });
   });
 
   it('puts a new line between the text of two turns', async () => {
@@ -69,7 +69,7 @@ describe('runBuilder', () => {
     const ac = new AbortController();
     ac.abort();
     const model = new FakeModel([{ text: 'x' }]);
-    expect(await runBuilder(base(model, tools(), [], { signal: ac.signal }))).toEqual({ responseId: '', finished: false });
+    expect(await runBuilder(base(model, tools(), [], { signal: ac.signal }))).toEqual({ responseId: '', finished: false, turns: 0 });
     expect(model.requests).toEqual([]);
   });
 });

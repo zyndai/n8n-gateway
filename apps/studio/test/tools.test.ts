@@ -5,11 +5,13 @@ import { checkWorkflow } from '@/lib/n8n/policy';
 import { WorkflowRelay } from '@/lib/n8n/relay';
 import type { HelperCard } from '@/lib/registry';
 import { FakeMcp, finishedRun } from './helpers/fakeMcp';
-import { interpret } from './helpers/interpret';
-import { HELPER_ID, LISTING_ID, OPENAI_CRED, ZYND_CRED, ctx, goodWorkflow } from './helpers/readback';
+import { HELPER_ID, LISTING_ID, ZYND_CRED, ctx, goodWorkflow } from './helpers/readback';
 
 const CHECK: HelperCard = { entityId: HELPER_ID, name: 'Counterparty Check', what: 'Confirms a UK company exists. In: company name, number or LEI.', category: 'compliance', priceUsd: '0.05' };
 const WALLET: HelperCard = { entityId: 'zns:7e2b5c1f9628fe2429a9d663bd03111b', name: 'Wallet Risk Screener', what: 'Screens a payment address.', category: 'compliance', priceUsd: '0.03' };
+const JSON_ONLY: HelperCard = { entityId: 'zns:aaaabbbbccccdddd', name: 'Ledger Lookup', what: 'Looks up a ledger entry. In: JSON with entryId.', category: 'finance', priceUsd: '0.02', inputModes: ['application/json'] };
+/** One intermediate step of the AI: a paid helper call that answered, or one that did not. */
+const step = (tool: string, answered = true) => ({ action: { tool }, observation: JSON.stringify([{ taskId: 't', status: answered ? 'COMPLETED' : 'FAILED', paymentUsd: answered ? '0.050000' : '0' }]) });
 
 describe('builder tools', () => {
   let mcp: FakeMcp;
@@ -40,6 +42,7 @@ describe('builder tools', () => {
         workflowName: () => 'Supplier Check · 11111111',
       },
       ctx,
+      mcp.writer(),
     );
     deps = {
       listing,
@@ -47,9 +50,7 @@ describe('builder tools', () => {
       relay,
       registry: { search: async (q) => (searched.push(q), [...known.values()]), lookup: (id) => known.get(id) },
       dataSources: ctx.dataSources,
-      agentModel: 'gpt-5-mini',
       zyndCredentialName: 'Zynd · ada-x7k2',
-      openAiCredentialName: 'OpenAI account',
       emit: (e) => void events.push(e),
       pollMs: 0,
       sleep: async () => {},
@@ -64,15 +65,15 @@ describe('builder tools', () => {
     events = [];
     saved = [];
     searched = [];
-    known = new Map([CHECK, WALLET].map((c) => [c.entityId, c]));
+    known = new Map([CHECK, WALLET, JSON_ONLY].map((c) => [c.entityId, c]));
     listing = { id: LISTING_ID, name: 'New agent' };
     build();
   });
 
-  it('offers exactly the tools the plan allows, nothing that publishes, deletes or runs raw n8n calls', () => {
+  it('offers only Studio\'s own tools: nothing that writes workflow code, publishes, deletes or calls n8n directly', () => {
     const names = TOOL_SPECS.map((s) => s.name);
-    expect(names).toEqual(['find_helpers', 'list_data_sources', 'update_preview', 'get_template', 'get_agent_setup', 'edit_agent', 'test_agent', 'progress', 'search_nodes', 'get_node_types', 'get_workflow_sdk_reference', 'get_workflow_best_practices', 'validate_workflow', 'create_workflow_from_code', 'update_workflow', 'get_workflow_details']);
-    for (const bad of ['publish_workflow', 'unpublish_workflow', 'archive_workflow', 'execute_workflow', 'list_credentials', 'create_agent']) expect(names).not.toContain(bad);
+    expect(names).toEqual(['find_helpers', 'list_data_sources', 'update_preview', 'build_agent', 'get_agent_setup', 'edit_agent', 'test_agent', 'progress']);
+    for (const bad of ['create_workflow_from_code', 'update_workflow', 'get_template', 'validate_workflow', 'publish_workflow', 'archive_workflow', 'execute_workflow', 'list_credentials']) expect(names).not.toContain(bad);
     // Function tools are strict by default in the Responses API; these have optional arguments.
     expect(TOOL_SPECS.every((s) => s.strict === false)).toBe(true);
     // No tool lets the model name a workflow id.
@@ -86,6 +87,7 @@ describe('builder tools', () => {
       expect(out).toEqual([
         { id: CHECK.entityId, name: 'Counterparty Check', what: CHECK.what, price_usd: '0.05' },
         { id: WALLET.entityId, name: 'Wallet Risk Screener', what: WALLET.what, price_usd: '0.03' },
+        { id: JSON_ONLY.entityId, name: 'Ledger Lookup', what: JSON_ONLY.what, price_usd: '0.02' },
       ]);
       expect((await call('find_helpers', {})).error).toMatch(/query/);
     });
@@ -130,36 +132,67 @@ describe('builder tools', () => {
     });
   });
 
-  describe('get_template', () => {
+  describe('build_agent (S5.1)', () => {
     const args = { instructions: 'You check suppliers. Reply with a short verdict.', helpers: [{ id: CHECK.entityId, input: 'json', fields: 'companyName, companyNumber' }], data_sources: ['Briefpixel news'], web: true };
-    it('returns code with the ids filled in, and the code is something the policy accepts', async () => {
-      const out = await tools.run('get_template', JSON.stringify(args));
-      expect(out).toContain(LISTING_ID);
-      expect(out).toContain(HELPER_ID);
-      expect(out).toContain('Zynd · ada-x7k2');
-      expect(out).toContain('"0.05"'); // the helper's own price is the cap
-      const code = out.slice(out.indexOf('import {'));
-      const wf = interpret(code, { 'Zynd · ada-x7k2': ZYND_CRED, 'OpenAI account': OPENAI_CRED });
-      expect(checkWorkflow(wf, ctx)).toEqual({ blocked: [], missing: [] });
+    it('writes the whole agent itself, with this person\'s credential and the helper\'s own price, and the read-back passes the check', async () => {
+      const out = await call('build_agent', args);
+      expect(out).toMatchObject({ saved: true, next: expect.stringMatching(/test_agent/) });
+      expect(out.tools.map((t: { name: string }) => t.name)).toEqual(['Counterparty Check', 'Briefpixel news', 'Web page reader']);
+      const body = mcp.callsTo('rest:create')[0]?.args as { name: string; nodes: { name: string; credentials?: Record<string, { id: string }>; parameters?: Record<string, unknown> }[] };
+      expect(body.name).toBe('Supplier Check · 11111111');
+      const helper = body.nodes.find((n) => n.name === 'Counterparty Check');
+      expect(helper?.credentials?.zyndApi?.id).toBe(ZYND_CRED);
+      expect(helper?.parameters).toMatchObject({ agentId: HELPER_ID, maxPaymentUsd: '0.05', payFromListingId: LISTING_ID, inputType: 'json' });
+      expect(checkWorkflow(mcp.workflow!, ctx)).toEqual({ blocked: [], missing: [] });
+      expect(bindState.workflowId).toBe('wf-1');
+      expect(mcp.callsTo('create_workflow_from_code')).toEqual([]);
+      expect(tools.state()).toMatchObject({ changed: true, tested: false });
     });
-    it('refuses helpers it does not know, unknown sources and instructions that are empty or too long', async () => {
-      expect((await call('get_template', { ...args, helpers: [{ id: 'zns:nope', input: 'text' }] })).error).toMatch(/not a helper you found/);
-      expect((await call('get_template', { ...args, data_sources: ['Nope'] })).error).toMatch(/Unknown data source/);
-      expect((await call('get_template', { instructions: '' })).error).toMatch(/instructions/);
-      expect((await call('get_template', { instructions: 'x'.repeat(1501) })).error).toMatch(/too long/);
+    it('rebuilds over the same workflow on a second call, keeping n8n\'s ids', async () => {
+      await call('build_agent', args);
+      const triggerId = mcp.workflow!.nodes.find((n) => n.name === 'Zynd Trigger')?.webhookId;
+      await call('build_agent', { instructions: 'Shorter now.' });
+      expect(mcp.callsTo('rest:create')).toHaveLength(1);
+      expect(mcp.callsTo('rest:replace')).toHaveLength(1);
+      expect(mcp.workflow!.nodes.find((n) => n.name === 'Zynd Trigger')?.webhookId).toBe(triggerId);
+      expect(mcp.workflow!.nodes.map((n) => n.name)).not.toContain('Counterparty Check');
     });
-    it('uses the agent\'s current name for the workflow', async () => {
-      listing.name = 'Renamed Agent';
-      expect(await tools.run('get_template', JSON.stringify({ instructions: 'Do it.' }))).toContain('Renamed Agent');
+    it('chooses the input type the helper\'s card allows, and plain text when the model does not say', async () => {
+      const out = await call('build_agent', { instructions: 'Do it.', helpers: [{ id: JSON_ONLY.entityId, input: 'text' }, { id: WALLET.entityId }] });
+      expect(out.tools.map((t: { input?: string }) => t.input)).toEqual(['json', 'text']);
+    });
+    it('refuses helpers it does not know, unknown sources, too many tools, and instructions that are empty or too long', async () => {
+      expect((await call('build_agent', { ...args, helpers: [{ id: 'zns:nope', input: 'text' }] })).error).toMatch(/not a helper you found/);
+      expect((await call('build_agent', { ...args, data_sources: ['Nope'] })).error).toMatch(/Unknown data source/);
+      expect((await call('build_agent', { instructions: '' })).error).toMatch(/instructions/);
+      expect((await call('build_agent', { instructions: 'x'.repeat(1501) })).error).toMatch(/too long/);
+      known.set('a', { ...WALLET, entityId: 'a' }).set('b', { ...WALLET, entityId: 'b' }).set('c', { ...WALLET, entityId: 'c' });
+      const many = await call('build_agent', { instructions: 'x', helpers: ['a', 'b', 'c', CHECK.entityId, WALLET.entityId].map((id) => ({ id })), data_sources: ['Briefpixel news'] });
+      expect(many.error).toMatch(/at most 5/);
+      expect(mcp.callsTo('rest:create')).toEqual([]);
+    });
+    it('passes a failed save on in plain words and keeps nothing', async () => {
+      mcp.failTool['rest:create'] = 'request/body must have required property \'settings\'';
+      const out = await call('build_agent', args);
+      expect(out.error).toMatch(/could not reach the agent service/);
+      expect(bindState.workflowId).toBeNull();
+    });
+    it('sets the right credentials when n8n changed them, and archives a workflow n8n made unsafe', async () => {
+      mcp.onCreate = (wf) => void (wf.nodes.find((n) => n.name === 'Zynd Trigger')!.credentials = { zyndApi: { id: 'showcase', name: 'Zynd account' } });
+      expect((await call('build_agent', args)).saved).toBe(true);
+      expect(mcp.workflow!.nodes.find((n) => n.name === 'Zynd Trigger')?.credentials?.zyndApi?.id).toBe(ZYND_CRED);
+      bindState.workflowId = null;
+      mcp.onCreate = (wf) => void wf.nodes.push({ name: 'Run code', type: 'n8n-nodes-base.code', typeVersion: 2, parameters: {} });
+      const out = await call('build_agent', args);
+      expect(out.error).toMatch(/not saved/);
+      expect(mcp.callsTo('archive_workflow')).toHaveLength(1);
+      expect(bindState.workflowId).toBeNull();
     });
   });
 
   describe('test_agent and "ready" (S2.6)', () => {
     const finished = (answer = 'Looks fine.') => mcp.executions.set('100', finishedRun({ answer }));
-    const create = async () => {
-      mcp.created = goodWorkflow();
-      return call('create_workflow_from_code', { code: 'x' });
-    };
+    const create = async (helpers: unknown[] = [{ id: CHECK.entityId, input: 'json', fields: 'companyName' }]) => call('build_agent', { instructions: 'You check suppliers.', helpers });
 
     it('refuses "ready" until a test has answered', async () => {
       expect((await call('progress', { step: 'ready' })).error).toMatch(/Not ready yet/);
@@ -191,7 +224,8 @@ describe('builder tools', () => {
       mcp.executions.set('100', finishedRun({ status: 'error', answer: '', error: 'Payment failed: insufficient balance' }));
       const out = await call('test_agent', { question: 'x' });
       expect(out).toMatchObject({ kind: 'credit' });
-      expect(out.hint).toMatch(/ran out of credit/);
+      expect(out.hint).toMatch(/needs credit/);
+      expect(tools.state()).toMatchObject({ noCredit: true, lastFailure: 'credit' });
     });
 
     it('gives up on a test that takes too long', async () => {
@@ -204,8 +238,7 @@ describe('builder tools', () => {
       await create();
       finished();
       await call('test_agent', { question: 'x' });
-      mcp.onUpdate = () => {};
-      await call('update_workflow', { operations: [{ type: 'setNodeDisabled', nodeName: 'Web page reader', disabled: true }] });
+      await call('build_agent', { instructions: 'You check suppliers, briefly.' });
       expect((await call('progress', { step: 'ready' })).error).toMatch(/Not ready yet/);
       mcp.executions.set('101', finishedRun({ answer: 'Fine again.' }));
       await call('test_agent', { question: 'y' });
@@ -224,8 +257,73 @@ describe('builder tools', () => {
       expect(mcp.callsTo('execute_workflow')).toHaveLength(2);
     });
 
-    it('will not test an agent that has no workflow yet', async () => {
-      expect((await call('test_agent', { question: 'x' })).error).toMatch(/no workflow yet/);
+    it('will not test an agent that has no version yet', async () => {
+      expect((await call('test_agent', { question: 'x' })).error).toMatch(/no version yet/);
+    });
+
+    it('does not spend a test when the wallet cannot pay even the cheapest helper', async () => {
+      build({ balance: async () => '0.01' });
+      await create();
+      const out = await call('test_agent', { question: 'x' });
+      expect(out).toMatchObject({ kind: 'credit', balance_usd: '0.01' });
+      expect(mcp.callsTo('execute_workflow')).toEqual([]);
+      expect(tools.state()).toMatchObject({ noCredit: true, tests: 0 });
+    });
+    it('tests as usual when the balance is enough or unknown', async () => {
+      build({ balance: async () => null });
+      await create();
+      finished();
+      expect((await call('test_agent', { question: 'x' })).ok).toBe(true);
+    });
+  });
+
+  describe('Studio repairs a helper that did not answer (S5.1)', () => {
+    it('switches its input type and tests again, then says what it changed', async () => {
+      await call('build_agent', { instructions: 'You check suppliers.', helpers: [{ id: CHECK.entityId, input: 'json', fields: 'companyName' }] });
+      mcp.executions.set('100', finishedRun({ status: 'error', answer: '', steps: [step('Counterparty_Check', false)], error: 'Agent task failed' }));
+      mcp.executions.set('101', finishedRun({ answer: 'Verdict: fine.', steps: [step('Counterparty_Check')] }));
+      const out = await call('test_agent', { question: 'Check ACME Ltd' });
+      expect(out).toMatchObject({ ok: true, answer: 'Verdict: fine.' });
+      expect(out.studio_changed).toEqual(['Counterparty Check did not answer, so Studio now sends it plain text.']);
+      expect(mcp.workflow!.nodes.find((n) => n.name === 'Counterparty Check')?.parameters?.inputType).toBe('text');
+      expect(tools.state()).toMatchObject({ tested: true, tests: 2, repairs: 1 });
+      expect((await call('progress', { step: 'ready' })).shown).toBe('ready');
+    });
+    it('leaves the helper out when it still gives no answer, and the agent then works without it', async () => {
+      await call('build_agent', { instructions: 'You check suppliers.', helpers: [{ id: CHECK.entityId }] });
+      const broken = finishedRun({ status: 'error', answer: '', steps: [step('Counterparty_Check', false)], error: 'Agent task failed' });
+      mcp.executions.set('100', broken);
+      mcp.executions.set('101', broken);
+      mcp.executions.set('102', finishedRun({ answer: 'I could not check the registry, but here is what I know.' }));
+      const out = await call('test_agent', { question: 'Check ACME Ltd' });
+      expect(out.ok).toBe(true);
+      expect(out.studio_changed).toEqual(['Counterparty Check did not answer, so Studio now sends it a JSON object.', 'Counterparty Check did not answer, so Studio left it out for now.']);
+      expect(mcp.workflow!.nodes.map((n) => n.name)).not.toContain('Counterparty Check');
+      expect(tools.state()).toMatchObject({ tests: 3, repairs: 2, tested: true });
+    });
+    it('never switches to an input type the card does not allow, and never drops a helper from an agent that answered', async () => {
+      await call('build_agent', { instructions: 'Look up entries.', helpers: [{ id: JSON_ONLY.entityId, input: 'json', fields: 'entryId' }] });
+      mcp.executions.set('100', finishedRun({ answer: 'The ledger did not answer.', steps: [step('Ledger_Lookup', false)] }));
+      const out = await call('test_agent', { question: 'Entry 42' });
+      expect(out).toMatchObject({ ok: true, not_answering: ['Ledger Lookup'] });
+      expect(mcp.callsTo('rest:replace')).toEqual([]);
+      expect(tools.state()).toMatchObject({ tests: 1, repairs: 0 });
+    });
+    it('stays within the test budget', async () => {
+      build({ maxTests: 1 });
+      await call('build_agent', { instructions: 'You check suppliers.', helpers: [{ id: CHECK.entityId }] });
+      mcp.executions.set('100', finishedRun({ status: 'error', answer: '', steps: [step('Counterparty_Check', false)], error: 'Agent task failed' }));
+      const out = await call('test_agent', { question: 'x' });
+      expect(out).toMatchObject({ error: 'The test did not produce an answer.', kind: 'helper' });
+      expect(mcp.callsTo('execute_workflow')).toHaveLength(1);
+    });
+    it('does not repair an agent changed with edit_agent, since it has no whole picture of it', async () => {
+      bindState.workflowId = 'wf-1';
+      mcp.workflow = goodWorkflow();
+      await call('edit_agent', { instructions: 'Check suppliers.' });
+      mcp.executions.set('100', finishedRun({ status: 'error', answer: '', steps: [step('Counterparty_Check', false)], error: 'Agent task failed' }));
+      expect((await call('test_agent', { question: 'x' })).kind).toBe('helper');
+      expect(tools.state().repairs).toBe(0);
     });
   });
 
@@ -281,20 +379,15 @@ describe('builder tools', () => {
 
     it('a change makes "ready" wait for a new test, and state() tells the runner what happened', async () => {
       mcp.executions.set('100', finishedRun({ answer: 'Fine.' }));
-      expect(tools.state()).toEqual({ changed: false, tested: false });
+      expect(tools.state()).toMatchObject({ changed: false, tested: false });
       await call('test_agent', { question: 'a' });
-      expect(tools.state()).toEqual({ changed: false, tested: true });
+      expect(tools.state()).toMatchObject({ changed: false, tested: true });
       await call('edit_agent', { web: false });
-      expect(tools.state()).toEqual({ changed: true, tested: false });
+      expect(tools.state()).toMatchObject({ changed: true, tested: false });
       expect((await call('progress', { step: 'ready' })).error).toMatch(/Not ready yet/);
       mcp.executions.set('101', finishedRun({ answer: 'Fine again.' }));
       await call('test_agent', { question: 'b' });
-      expect(tools.state()).toEqual({ changed: true, tested: true });
-    });
-
-    it('a change through update_workflow counts too', async () => {
-      await call('update_workflow', { operations: [{ type: 'setNodeDisabled', nodeName: 'Web page reader', disabled: true }] });
-      expect(tools.state().changed).toBe(true);
+      expect(tools.state()).toMatchObject({ changed: true, tested: true, tests: 2 });
     });
 
     it('update_preview on a built agent keeps its price: only the first build suggests one', async () => {
@@ -303,30 +396,19 @@ describe('builder tools', () => {
     });
   });
 
-  describe('the n8n tools', () => {
-    it('go through the guarded relay: another workflow\'s id is refused, with the reason', async () => {
-      await call('create_workflow_from_code', { code: 'x' });
-      const out = await call('update_workflow', { workflowId: 'wf-someone-else', operations: [{ type: 'removeNode', nodeName: 'x' }] });
-      expect(out.error).toMatch(/not this agent/);
+  describe('anything else', () => {
+    it('refuses the raw n8n tools the model used to have', async () => {
+      for (const name of ['create_workflow_from_code', 'update_workflow', 'get_template', 'get_workflow_details']) expect((await call(name, { code: 'x' })).error).toMatch(/does not exist/);
+      expect(mcp.calls).toEqual([]);
     });
-    it('report what was not allowed, so the model can fix it', async () => {
-      mcp.created = goodWorkflow((n) => void n.push({ name: 'Run code', type: 'n8n-nodes-base.code', typeVersion: 2, parameters: {} }));
-      const out = await call('create_workflow_from_code', { code: 'x' });
-      expect(out.error).toMatch(/not saved/);
-      expect(out.problems.join()).toContain('n8n-nodes-base.code');
-    });
-    it('pass n8n\'s own error text on, shortened', async () => {
-      mcp.failTool.validate_workflow = 'Invalid SDK code: unexpected token at line 3';
-      expect((await call('validate_workflow', { code: 'x' })).error).toMatch(/unexpected token/);
-    });
-    it('answer a model that sends broken arguments or an unknown tool', async () => {
+    it('answers a model that sends broken arguments or an unknown tool', async () => {
       expect((await call('find_helpers', '{oops')).error).toMatch(/not valid JSON/);
       expect((await call('find_helpers', '[1,2]')).error).toMatch(/JSON object/);
       expect((await call('delete_everything', {})).error).toMatch(/does not exist/);
     });
-    it('cut very long answers', async () => {
-      mcp.callTool = async () => ({ big: 'x'.repeat(50_000) });
-      const out = await tools.run('get_workflow_sdk_reference', '{}');
+    it('cuts very long answers', async () => {
+      build({ dataSources: Array.from({ length: 80 }, (_, i) => ({ ...ctx.dataSources[0]!, name: `Source ${i}`, what: 'x'.repeat(300) })) });
+      const out = await tools.run('list_data_sources', '{}');
       expect(out.length).toBeLessThan(15_000);
       expect(out).toContain('more characters');
     });

@@ -8,6 +8,8 @@
 // Publish, unpublish and archive are never offered to the model: Studio calls them itself from buttons.
 import { planEdit, currentInstructions, toolsOf, type AgentEdit, type ToolInfo } from '../builder/edit';
 import { NODE } from '../builder/template';
+import { keepIds, renderWorkflowJson, type AgentSpec, type RenderedTool } from '../builder/workflow-json';
+import type { WorkflowWriter } from './rest';
 import { checkWorkflow, credentialFixes, type N8nNode, type N8nWorkflow, type PolicyContext, type PolicyResult } from './policy';
 import { parseExecution, parseRequest, toolKey, type RunView } from './runs';
 
@@ -68,6 +70,8 @@ export class WorkflowRelay {
     private readonly mcp: McpLike,
     private readonly bind: WorkflowBinding,
     private readonly ctx: PolicyContext,
+    /** Where Studio writes whole workflows (n8n's REST API). Without it, `saveAgent` refuses. */
+    private readonly writer?: WorkflowWriter,
   ) {}
 
   get workflowId(): string | null {
@@ -109,7 +113,11 @@ export class WorkflowRelay {
     return wf;
   }
 
-  /** One call from the builder model. Anything not on the allow-list, or aimed at another workflow, is refused. */
+  /**
+   * One raw n8n call, as the builder model made them before S5.1. The builder no longer offers these (Studio writes
+   * whole agents with `saveAgent`); kept, guarded and tested as the MCP fallback should REST writes be unavailable.
+   * Anything not on the allow-list, or aimed at another workflow, is refused.
+   */
   async callForModel(tool: string, args: Record<string, unknown>): Promise<unknown> {
     const allowed = MODEL_TOOLS[tool];
     if (!allowed) throw new RelayRefusal(`The tool "${tool}" is not available to you.`);
@@ -158,6 +166,50 @@ export class WorkflowRelay {
     this.bind.workflowId = id;
     await this.mcp.callTool('update_workflow', { workflowId: id, operations: [{ type: 'addTags', names: ['zynd-studio'] }] }).catch(() => undefined);
     return { saved: true, problems: result.missing, ...(result.missing.length ? { next: 'Fix these with update_workflow before testing.' } : {}) };
+  }
+
+  /**
+   * Writes the whole agent from what it is (S5.1). Studio renders every step, checks the result before sending it,
+   * writes it (create, or replace keeping n8n's ids), sets the credentials, reads it back and checks it again. A new
+   * workflow with anything not allowed is archived and never kept; a replaced one on a live agent stays a draft.
+   */
+  async saveAgent(spec: AgentSpec): Promise<{ created: boolean; problems: string[]; tools: RenderedTool[] }> {
+    if (!this.writer) throw new RelayRefusal('Studio cannot save agents right now. Tell the person to try again later.');
+    const { workflow, tools } = renderWorkflowJson(spec, {
+      listingId: this.ctx.listingId,
+      name: this.bind.workflowName(),
+      model: this.ctx.agentModel,
+      zyndCredential: { id: this.ctx.zyndCredentialId, name: this.ctx.zyndCredentialName ?? this.ctx.zyndCredentialId },
+      openAiCredential: { id: this.ctx.openAiCredentialId, name: this.ctx.openAiCredentialName ?? this.ctx.openAiCredentialId },
+    });
+    const before = checkWorkflow(workflow, this.ctx);
+    if (before.blocked.length > 0) throw new RelayRefusal('That agent would contain something that is not allowed, so it was not saved.', before.blocked);
+
+    const existing = this.bind.workflowId;
+    if (existing) {
+      const current = await this.details(existing);
+      await this.writer.replace(existing, { ...keepIds(workflow, current), name: typeof current.name === 'string' && current.name ? current.name : workflow.name });
+      const r = checkWorkflow(await this.pinCredentials(existing), this.ctx);
+      if (r.blocked.length > 0) throw new RelayRefusal('The saved agent contains something that is not allowed, so it will not run.', r.blocked);
+      return { created: false, problems: r.missing, tools };
+    }
+
+    const id = await this.writer.create(workflow);
+    let r: PolicyResult;
+    try {
+      r = checkWorkflow(await this.pinCredentials(id), this.ctx);
+    } catch (err) {
+      await this.mcp.callTool('archive_workflow', { workflowId: id }).catch(() => undefined);
+      throw err;
+    }
+    if (r.blocked.length > 0) {
+      await this.mcp.callTool('archive_workflow', { workflowId: id }).catch(() => undefined);
+      throw new RelayRefusal('The agent was not saved because it contains something that is not allowed.', r.blocked);
+    }
+    await this.bind.remember(id);
+    this.bind.workflowId = id;
+    await this.mcp.callTool('update_workflow', { workflowId: id, operations: [{ type: 'addTags', names: ['zynd-studio'] }] }).catch(() => undefined);
+    return { created: true, problems: r.missing, tools };
   }
 
   private async update(args: Record<string, unknown>): Promise<unknown> {

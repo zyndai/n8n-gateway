@@ -7,6 +7,7 @@ import type { DataSource } from '../env';
 import type { PolicyContext } from '../n8n/policy';
 import { McpError } from '../n8n/mcp';
 import { RelayRefusal, WorkflowRelay, type McpLike } from '../n8n/relay';
+import type { WorkflowWriter } from '../n8n/rest';
 import type { RunView } from '../n8n/runs';
 import type { ActivityItem } from '../types';
 import type { StudioSession } from '../session-cookie';
@@ -38,6 +39,8 @@ export class AgentError extends Error {
 export interface AgentServiceDeps {
   gateway: GatewayClient;
   mcp: McpLike;
+  /** Where whole workflows are written (n8n's REST API). */
+  workflows?: WorkflowWriter;
   /** The id of a credential in n8n by exact name and type. */
   findCredentialId(type: string, name: string): Promise<string | undefined>;
   treasury: Treasury | null;
@@ -157,7 +160,7 @@ export class AgentService {
       },
       workflowName: () => `${listing.name} · ${listing.id.slice(0, 8)}`,
     };
-    return new WorkflowRelay(this.deps.mcp, binding, ctx);
+    return new WorkflowRelay(this.deps.mcp, binding, ctx, this.deps.workflows);
   }
 
   async policyContextFor(listing: ListingView): Promise<PolicyContext> {
@@ -175,6 +178,15 @@ export class AgentService {
       dataSources: this.deps.dataSources,
       maxCallPriceUsd: this.deps.maxCallPriceUsd,
     };
+  }
+
+  /** What is left in this agent's own wallet, USD, or null when the Gateway could not say. */
+  async walletBalance(id: string): Promise<string | null> {
+    try {
+      return (await this.api.wallet()).listings.find((w) => w.listingId === id)?.balanceUsd ?? null;
+    } catch {
+      return null;
+    }
   }
 
   // --- S3.1: use it in the app ---------------------------------------------------------------

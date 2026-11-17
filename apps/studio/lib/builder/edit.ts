@@ -53,7 +53,7 @@ export type EditPlan = { ok: true; operations: Record<string, unknown>[]; tools:
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** One short plain line from any text: no braces (n8n would read `{{ }}` as an expression), no line breaks, no quotes. */
-const line = (s: string, max: number): string =>
+export const line = (s: string, max: number): string =>
   s
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .replace(/[{}'"`\\]/g, '')
@@ -71,7 +71,7 @@ const hint = (s: string): string =>
     .slice(0, 200);
 
 /** The same expression text n8n's own builder writes (and reads back) for a value the AI fills in. */
-const fromAi = (key: string, description: string): string => `={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('${key}', '${hint(description)}') }}`;
+export const fromAi = (key: string, description: string): string => `={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('${key}', '${hint(description)}') }}`;
 
 const param = (n: N8nNode, k: string): unknown => n.parameters?.[k];
 
@@ -98,9 +98,78 @@ export function currentInstructions(wf: N8nWorkflow): string | null {
   return typeof message === 'string' && !message.startsWith('=') ? instructionsOf(message) : null;
 }
 
-const toolLine = (t: ToolInfo): string => (t.kind === 'web' ? 'Web page reader (public pages and APIs that need no key)' : `${t.name} (a ${t.kind === 'helper' ? 'helper agent' : 'data source'}: ${t.what})`);
 
-const uniqueName = (taken: Set<string>, base: string): string => {
+/** Where a paid tool's credential and wallet come from. */
+export interface ToolNodeEnv {
+  listingId: string;
+  zyndCredential: { id: string; name: string };
+}
+
+/** A helper as a tool step: hired by its fixed id, paid from this agent's wallet, never above its own price. */
+export function helperNode(name: string, h: { entityId: string; what: string; priceUsd: string; input: 'text' | 'json'; fields?: string }, env: ToolNodeEnv, position: [number, number]): N8nNode {
+  const what = line(h.what, 300);
+  const fields = line(h.fields ?? '', 200);
+  const how = h.input === 'json' ? `Send a JSON object${fields ? ` with these fields: ${fields}` : ''}.` : 'Send a short plain-text request.';
+  return {
+    name,
+    type: TOOL_TYPES.helper,
+    typeVersion: 1,
+    position,
+    parameters: {
+      descriptionType: 'manual',
+      toolDescription: `${what} ${how}`.slice(0, 500),
+      operation: 'callAgent',
+      agentId: h.entityId,
+      ...(h.input === 'json'
+        ? { inputType: 'json', inputJson: fromAi('input', `A JSON object for ${name}${fields ? ` with the fields ${fields}` : ''}`) }
+        : { inputType: 'text', inputText: fromAi('request', `What to ask ${name}, in plain words`) }),
+      maxPaymentUsd: h.priceUsd,
+      payFrom: 'listing',
+      payFromListingId: env.listingId,
+    },
+    credentials: { zyndApi: { id: env.zyndCredential.id, name: env.zyndCredential.name } },
+  };
+}
+
+/** A data source as a tool step: one fixed listing and operation, paid from this agent's wallet. */
+export function sourceNode(name: string, s: Pick<DataSource, 'listingUrl' | 'operation' | 'what' | 'maxPriceUsd' | 'fields'>, env: ToolNodeEnv, position: [number, number]): N8nNode {
+  const what = line(s.what, 300);
+  const fields = line(s.fields ?? '', 200);
+  return {
+    name,
+    type: TOOL_TYPES.source,
+    typeVersion: 1,
+    position,
+    parameters: {
+      descriptionType: 'manual',
+      toolDescription: `${what}${fields ? ` Parameters: ${fields}.` : ''}`.slice(0, 500),
+      operation: 'call',
+      listingUrl: s.listingUrl,
+      airnodeOperation: s.operation,
+      airnodeParameters: fromAi('parameters', `A JSON object of parameters for ${name}${fields ? `: ${fields}` : ''}`),
+      maxPaymentUsd: s.maxPriceUsd,
+      payFrom: 'listing',
+      payFromListingId: env.listingId,
+    },
+    credentials: { zyndApi: { id: env.zyndCredential.id, name: env.zyndCredential.name } },
+  };
+}
+
+/** The web reader: GET only, no key, a short answer. */
+export function webNode(name: string, position: [number, number]): N8nNode {
+  return {
+    name,
+    type: TOOL_TYPES.web,
+    typeVersion: 4.5,
+    position,
+    parameters: { method: 'GET', url: fromAi('url', 'The full https address of a public web page or API that needs no key'), authentication: 'none', optimizeResponse: true, responseType: 'text', truncateResponse: true, maxLength: 6000 },
+  };
+}
+
+/** The line about one tool in the AI step's system message. */
+export const toolLine = (t: ToolInfo): string => (t.kind === 'web' ? 'Web page reader (public pages and APIs that need no key)' : `${t.name} (a ${t.kind === 'helper' ? 'helper agent' : 'data source'}: ${t.what})`);
+
+export const uniqueName = (taken: Set<string>, base: string): string => {
   const clean = base.replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 40) || 'Helper';
   let name = clean;
   for (let i = 2; taken.has(name); i++) name = `${clean} ${i}`;
@@ -142,8 +211,6 @@ export function planEdit(wf: N8nWorkflow, edit: AgentEdit, env: EditEnv): EditPl
   let slot = 0;
   const place = (): [number, number] => [600 + 220 * slot++, nextY];
   const plug = (name: string) => operations.push({ type: 'addConnection', source: name, target: NODE.ai, connectionType: 'ai_tool' });
-  const credentials = { zyndApi: { id: env.zyndCredential.id, name: env.zyndCredential.name } };
-  const pay = { payFrom: 'listing', payFromListingId: env.listingId };
   const tooDear = (price: string) => !/^\d{1,4}(\.\d{1,6})?$/.test(price) || Number(price) > Number(env.maxCallPriceUsd);
 
   for (const h of edit.addHelpers ?? []) {
@@ -151,30 +218,8 @@ export function planEdit(wf: N8nWorkflow, edit: AgentEdit, env: EditEnv): EditPl
     if (tooDear(h.card.priceUsd)) return { ok: false, error: `${h.card.name} costs more than the most one call may cost ($${env.maxCallPriceUsd}).` };
     const name = uniqueName(taken, h.card.name);
     const what = line(h.card.what, 300);
-    const fields = line(h.fields ?? '', 200);
-    const how = h.input === 'json' ? `Send a JSON object${fields ? ` with these fields: ${fields}` : ''}.` : 'Send a short plain-text request.';
     have.add(h.card.entityId);
-    operations.push({
-      type: 'addNode',
-      node: {
-        name,
-        type: TOOL_TYPES.helper,
-        typeVersion: 1,
-        position: place(),
-        parameters: {
-          descriptionType: 'manual',
-          toolDescription: `${what} ${how}`.slice(0, 500),
-          operation: 'callAgent',
-          agentId: h.card.entityId,
-          ...(h.input === 'json'
-            ? { inputType: 'json', inputJson: fromAi('input', `A JSON object for ${name}${fields ? ` with the fields ${fields}` : ''}`) }
-            : { inputType: 'text', inputText: fromAi('request', `What to ask ${name}, in plain words`) }),
-          maxPaymentUsd: h.card.priceUsd,
-          ...pay,
-        },
-        credentials,
-      },
-    });
+    operations.push({ type: 'addNode', node: helperNode(name, { entityId: h.card.entityId, what: h.card.what, priceUsd: h.card.priceUsd, input: h.input, ...(h.fields ? { fields: h.fields } : {}) }, env, place()) });
     plug(name);
     added.push({ name, kind: 'helper', what, maxPriceUsd: h.card.priceUsd });
   }
@@ -184,44 +229,15 @@ export function planEdit(wf: N8nWorkflow, edit: AgentEdit, env: EditEnv): EditPl
     if (tooDear(s.maxPriceUsd)) return { ok: false, error: `${s.name} costs more than the most one call may cost ($${env.maxCallPriceUsd}).` };
     const name = uniqueName(taken, s.name);
     const what = line(s.what, 300);
-    const fields = line(s.fields ?? '', 200);
     haveSources.add(`${s.listingUrl}|${s.operation}`);
-    operations.push({
-      type: 'addNode',
-      node: {
-        name,
-        type: TOOL_TYPES.source,
-        typeVersion: 1,
-        position: place(),
-        parameters: {
-          descriptionType: 'manual',
-          toolDescription: `${what}${fields ? ` Parameters: ${fields}.` : ''}`.slice(0, 500),
-          operation: 'call',
-          listingUrl: s.listingUrl,
-          airnodeOperation: s.operation,
-          airnodeParameters: fromAi('parameters', `A JSON object of parameters for ${name}${fields ? `: ${fields}` : ''}`),
-          maxPaymentUsd: s.maxPriceUsd,
-          ...pay,
-        },
-        credentials,
-      },
-    });
+    operations.push({ type: 'addNode', node: sourceNode(name, s, env, place()) });
     plug(name);
     added.push({ name, kind: 'data source', what, maxPriceUsd: s.maxPriceUsd });
   }
 
   if (edit.web === true && !(hasWeb && !removed.has(hasWeb.name))) {
     const name = uniqueName(taken, WEB_TOOL_NAME);
-    operations.push({
-      type: 'addNode',
-      node: {
-        name,
-        type: TOOL_TYPES.web,
-        typeVersion: 4.5,
-        position: place(),
-        parameters: { method: 'GET', url: fromAi('url', 'The full https address of a public web page or API that needs no key'), authentication: 'none', optimizeResponse: true, responseType: 'text', truncateResponse: true, maxLength: 6000 },
-      },
-    });
+    operations.push({ type: 'addNode', node: webNode(name, place()) });
     plug(name);
     added.push({ name, kind: 'web', what: 'Reads public web pages and open APIs that need no key.' });
   }

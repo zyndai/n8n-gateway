@@ -5,6 +5,9 @@ import { NODE } from '../builder/template';
 import type { DataSource } from '../env';
 
 export interface N8nNode {
+  /** n8n's own ids: kept when a workflow is rewritten, so a live trigger keeps its webhook. */
+  id?: string;
+  webhookId?: string;
   name: string;
   type: string;
   typeVersion?: number;

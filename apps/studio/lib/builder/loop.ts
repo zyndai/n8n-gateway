@@ -24,6 +24,8 @@ export interface BuilderOutcome {
   responseId: string;
   /** False when the loop was cut short (turn limit, error). */
   finished: boolean;
+  /** Model turns used. */
+  turns: number;
 }
 
 /** What a person reads when something goes wrong. Never raw error text. */
@@ -37,7 +39,7 @@ export function plainBuilderError(err: unknown): string {
 }
 
 export async function runBuilder(run: BuilderRun): Promise<BuilderOutcome> {
-  const maxTurns = run.maxTurns ?? 16;
+  const maxTurns = run.maxTurns ?? 10;
   let input: InputItem[] = [{ role: 'user', content: run.userText }];
   let previous = run.previousResponseId;
   let spoke = false; // the previous turn wrote text: start the next one on a new line
@@ -59,9 +61,9 @@ export async function runBuilder(run: BuilderRun): Promise<BuilderOutcome> {
   };
 
   for (let turn = 1; turn <= maxTurns; turn++) {
-    if (run.signal?.aborted) return { responseId: '', finished: false };
+    if (run.signal?.aborted) return { responseId: '', finished: false, turns: turn - 1 };
     const result = await turnOnce(run.tools.specs);
-    if (result.calls.length === 0) return { responseId: previous ?? '', finished: true };
+    if (result.calls.length === 0) return { responseId: previous ?? '', finished: true, turns: turn };
 
     const outputs: InputItem[] = [];
     for (const call of result.calls) {
@@ -74,5 +76,5 @@ export async function runBuilder(run: BuilderRun): Promise<BuilderOutcome> {
   // conversation can be continued from a clean response next time.
   run.log?.warn(`builder stopped after ${maxTurns} turns`);
   await turnOnce([]);
-  return { responseId: previous ?? '', finished: false };
+  return { responseId: previous ?? '', finished: false, turns: maxTurns + 1 };
 }

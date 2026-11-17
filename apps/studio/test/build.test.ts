@@ -24,16 +24,14 @@ describe('runBuild', () => {
 
   const deps = (model: FakeModel, over: Partial<BuildDeps> = {}): BuildDeps => ({
     agents: new AgentService(
-      { gateway: gw, mcp, findCredentialId: async () => ZYND_CRED, treasury: null, starterCreditUsd: '1', starterCreditMaxAgents: 3, openAiCredentialId: ctx.openAiCredentialId, agentModel: ctx.agentModel, dataSources: ctx.dataSources, maxCallPriceUsd: ctx.maxCallPriceUsd },
+      { gateway: gw, mcp, workflows: mcp.writer(), findCredentialId: async () => ZYND_CRED, treasury: null, starterCreditUsd: '1', starterCreditMaxAgents: 3, openAiCredentialId: ctx.openAiCredentialId, agentModel: ctx.agentModel, dataSources: ctx.dataSources, maxCallPriceUsd: ctx.maxCallPriceUsd },
       session,
     ),
     registry: { search: async () => [CHECK], lookup: (id) => (id === CHECK.entityId ? CHECK : undefined) },
     openai: model,
     builderModel: 'gpt-builder',
-    agentModel: ctx.agentModel,
     dataSources: ctx.dataSources,
     sessionSecret: SECRET,
-    openAiCredentialName: async () => 'OpenAI account',
     tools: { pollMs: 0, sleep: async () => {}, testTimeoutMs: 100 },
     ...over,
   });
@@ -44,6 +42,7 @@ describe('runBuild', () => {
   beforeEach(() => {
     resetBuildLimits();
     gw = new FakeGateway();
+    gw.listingBalanceUsd = '1.00';
     mcp = new FakeMcp();
     session = { uid: `user-b${++n}`, did: 'zns:dev:ada', handle: 'ada-x7k2', name: 'Ada', email: 'a@example.com' };
     events = [];
@@ -82,30 +81,44 @@ describe('runBuild', () => {
     const script: Scripted[] = [
       { text: 'Let me look for helpers.', calls: [{ name: 'progress', args: { step: 'finding' } }, { name: 'find_helpers', args: { query: 'company check' } }] },
       { calls: [{ name: 'update_preview', args: { name: 'Supplier Check', description: 'Checks a supplier.', helper_ids: [HELPER_ID], suggested_price_usd: '0.15' } }] },
-      { calls: [{ name: 'progress', args: { step: 'building' } }, { name: 'get_template', args: { instructions: 'You check suppliers.', helpers: [{ id: HELPER_ID, input: 'json', fields: 'companyName' }] } }] },
-      { calls: [{ name: 'create_workflow_from_code', args: { code: 'export default workflow()' } }] },
+      { calls: [{ name: 'progress', args: { step: 'building' } }, { name: 'build_agent', args: { instructions: 'You check suppliers.', helpers: [{ id: HELPER_ID, input: 'json', fields: 'companyName' }] } }] },
       { calls: [{ name: 'test_agent', args: { question: 'Check ACME Ltd' } }] },
       { calls: [{ name: 'progress', args: { step: 'ready' } }] },
       { text: 'Your agent is ready: try it and publish when you are happy.' },
     ];
-    // The workflow n8n returns for the created agent points at this agent's own listing.
-    mcp.created = goodWorkflow((nodes) => {
-      for (const node of nodes) {
-        if (node.parameters?.listingId) node.parameters.listingId = agentId;
-        if (node.parameters?.payFromListingId) node.parameters.payFromListingId = agentId;
-      }
-    });
     mcp.executions.set('100', finishedRun({ answer: 'ACME is fine.' }));
     const model = new FakeModel(script);
-    await run(model);
+    const logged: string[] = [];
+    await run(model, 'Check a new supplier', undefined, { log: { info: (m: string) => void logged.push(m), warn: () => {}, error: () => {} } });
 
     expect(events.filter((e) => e.type === 'progress').map((e) => (e as { step: string }).step)).toEqual(['finding', 'building', 'testing', 'ready']);
     expect(events.some((e) => e.type === 'preview')).toBe(true);
     expect(types().slice(-2)).toEqual(['thread', 'done']);
     expect(gw.listings[0]).toMatchObject({ name: 'Supplier Check', summary: 'Checks a supplier.', priceUsd: '0.15', workflowId: 'wf-1' });
     // The model never saw an id it could abuse, and ready came only after the test.
-    expect(outputsOf(model.requests[5]?.input ?? [])[0]?.output).toMatchObject({ ok: true, answer: 'ACME is fine.' });
-    expect(outputsOf(model.requests[6]?.input ?? [])[0]?.output).toEqual({ shown: 'ready' });
+    expect(outputsOf(model.requests[4]?.input ?? [])[0]?.output).toMatchObject({ ok: true, answer: 'ACME is fine.' });
+    expect(outputsOf(model.requests[5]?.input ?? [])[0]?.output).toEqual({ shown: 'ready' });
+    // The workflow was written by Studio over REST, with this agent's own listing in it.
+    expect(JSON.stringify(mcp.callsTo('rest:create')[0]?.args)).toContain(agentId);
+    // One line in the log says how it went.
+    expect(JSON.parse(logged.at(-1) as string)).toMatchObject({ event: 'builder.outcome', agent: agentId, outcome: 'ready', turns: 6, tests: 1, repairs: 0 });
+  });
+
+  it('does not spend a test on an agent whose wallet is empty, and logs it as no-credit', async () => {
+    gw.listingBalanceUsd = '0';
+    gw.listings[0]!.workflowId = 'wf-1';
+    mcp.workflow = goodWorkflow((nodes) => {
+      for (const node of nodes) {
+        if (node.parameters?.listingId) node.parameters.listingId = agentId;
+        if (node.parameters?.payFromListingId) node.parameters.payFromListingId = agentId;
+      }
+    });
+    const logged: string[] = [];
+    const model = new FakeModel([{ calls: [{ name: 'test_agent', args: { question: 'x' } }] }, { text: 'It needs credit first.' }]);
+    await run(model, 'try it', undefined, { log: { info: (m: string) => void logged.push(m), warn: () => {}, error: () => {} } });
+    expect(outputsOf(model.requests[1]?.input ?? [])[0]?.output).toMatchObject({ kind: 'credit' });
+    expect(mcp.callsTo('execute_workflow')).toEqual([]);
+    expect(JSON.parse(logged.at(-1) as string)).toMatchObject({ outcome: 'no-credit', cause: 'credit', tests: 0 });
   });
 
   it('does not let the model say ready without a test', async () => {
