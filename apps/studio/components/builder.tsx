@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, Circle, Loader2, Send, Sparkles } from 'lucide-react';
+import { Check, Circle, Loader2, Send, Sparkles, Square } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -8,7 +8,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { decodeEvents, type BuildEvent, type BuildStep, BUILD_STEPS } from '@/lib/builder/events';
+import { applyEvent, decodeEvents, newView, type BuildView, type Preview } from '@/lib/builder/events';
 import { apiMessage, copy } from '@/lib/copy';
 import { formatUsd } from '@/lib/format';
 import { SAMPLE_BUILD, SAMPLE_EDIT } from '@/lib/sample';
@@ -33,9 +33,45 @@ interface Saved {
   draft: Draft;
   step: number;
   thread: string | null;
+  /** A message still being worked on by the server when this was saved (S5.2). */
+  jobId?: string;
+  /** The last job already shown, so it is not shown twice. */
+  doneJob?: string;
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const draftOf = (p: Preview): Draft => ({ name: p.name, does: p.does, helpers: p.helpers, costUsd: p.costUsd });
+
+/** The chat bubbles one builder message adds: the question, the reply, and how it ended. */
+function bubblesOf(v: BuildView): Msg[] {
+  const out: Msg[] = [{ role: 'user', text: v.message }];
+  if (v.reply.trim()) out.push({ role: 'agent', text: v.reply.trim() });
+  if (v.live) out.push({ role: 'agent', text: copy.edit.live[v.live] });
+  if (v.error) out.push({ role: 'agent', text: v.error });
+  return out;
+}
+
+/** Reads one stream of numbered events into `onView`. Resolves true when the job said it had ended. */
+async function readJob(res: Response, start: BuildView, onView: (v: BuildView) => void): Promise<{ view: BuildView; ended: boolean }> {
+  let view = start;
+  if (!res.body) return { view, ended: false };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const { events, rest } = decodeEvents(buf);
+    buf = rest;
+    for (const e of events) {
+      if (e.type === 'ping' || (typeof e.seq === 'number' && e.seq <= view.seq)) continue;
+      view = applyEvent(view, e);
+      onView(view);
+    }
+  }
+  return { view, ended: view.status !== 'running' };
+}
 
 /** An error whose text is already plain words, so it may be shown as it is. Anything else becomes a generic line. */
 class PlainError extends Error {}
@@ -47,7 +83,14 @@ function parseSaved(raw: string | null | undefined): Saved | null {
   try {
     const s = JSON.parse(raw) as Partial<Saved>;
     if (!Array.isArray(s.messages) || typeof s.step !== 'number') return null;
-    return { messages: s.messages.slice(-60), draft: s.draft ?? { helpers: [] }, step: s.step >= 5 ? 5 : 0, thread: s.thread ?? null };
+    return {
+      messages: s.messages.slice(-60),
+      draft: s.draft ?? { helpers: [] },
+      step: s.step >= 5 ? 5 : 0,
+      thread: s.thread ?? null,
+      ...(typeof s.jobId === 'string' ? { jobId: s.jobId } : {}),
+      ...(typeof s.doneJob === 'string' ? { doneJob: s.doneJob } : {}),
+    };
   } catch {
     return null;
   }
@@ -72,9 +115,14 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
   const [input, setInput] = useState(initialIdea ?? '');
   const [draft, setDraft] = useState<Draft>(saved?.draft ?? { helpers: [] });
   const [step, setStep] = useState(editing ? 0 : (saved?.step ?? 0)); // 0 not started; 1..4 = the step in progress; 5 = all done
-  const [thinking, setThinking] = useState(false);
+  const [demoThinking, setDemoThinking] = useState(false);
   const [agentId, setAgentId] = useState<string | undefined>(initialAgentId);
   const [thread, setThread] = useState<string | null>(saved?.thread ?? null);
+  // The message the server is working on now (S5.2). It runs on the server: a reload only reattaches to it.
+  const [job, setJob] = useState<BuildView | null>(null);
+  const [doneJob, setDoneJob] = useState<string | undefined>(saved?.doneJob);
+  const [pendingJob, setPendingJob] = useState<string | undefined>(saved?.jobId);
+  const [stopping, setStopping] = useState(false);
   const alive = useRef(true);
   const endRef = useRef<HTMLDivElement>(null);
   const live = mode === 'live';
@@ -87,36 +135,110 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
     };
   }, []);
 
+  const jobId = job?.id ?? pendingJob;
   useEffect(() => {
     if (!live || !agentId) return;
     try {
-      window.localStorage.setItem(storeKey(agentId), JSON.stringify({ messages: messages.slice(-60), draft, step, thread } satisfies Saved));
+      const value: Saved = { messages: messages.slice(-60), draft, step, thread, ...(jobId ? { jobId } : {}), ...(doneJob ? { doneJob } : {}) };
+      window.localStorage.setItem(storeKey(agentId), JSON.stringify(value));
     } catch {
       /* storage is a convenience: without it the chat just does not come back after a reload */
     }
-  }, [live, agentId, messages, draft, step, thread]);
+  }, [live, agentId, messages, draft, step, thread, jobId, doneJob]);
 
+  const thinking = demoThinking || job?.status === 'running';
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages, thinking]);
+  }, [messages, thinking, job?.reply]);
 
-  const say = useCallback((m: Msg) => alive.current && setMessages((prev) => [...prev, m]), []);
+  /** A message that has ended becomes part of the chat for good. */
+  const settle = useCallback(
+    (v: BuildView) => {
+      if (!alive.current) return;
+      setMessages((prev) => [...prev, ...bubblesOf(v)]);
+      if (v.thread) setThread(v.thread);
+      if (v.preview) setDraft(draftOf(v.preview));
+      setStep(v.step);
+      setDoneJob(v.id);
+      setPendingJob(undefined);
+      setJob(null);
+      setStopping(false);
+      if (v.live === 'updated') toast.success(copy.edit.live.updated);
+      // What the agent is called and what it does may have changed: the page above the chat shows them.
+      if (editing) router.refresh();
+    },
+    [editing, router],
+  );
+
+  /** Follows a job until it ends, picking the stream up again when it drops (a proxy, a sleeping laptop). */
+  const follow = useCallback(
+    async (id: string, first: Response | null, start: BuildView) => {
+      let view = start;
+      const show = (v: BuildView) => alive.current && setJob(v);
+      show(view);
+      let res = first;
+      for (let attempt = 0; alive.current; attempt++) {
+        try {
+          res ??= await fetch(`/api/agents/${encodeURIComponent(id)}/build?after=${view.seq}`, { cache: 'no-store' });
+          if (res.status === 404) break; // the server no longer has it (it restarted)
+          if (!res.ok) throw new PlainError(apiMessage(((await res.json().catch(() => ({}))) as { error?: string }).error));
+          const out = await readJob(res, view, show);
+          view = out.view;
+          if (out.ended) return settle(view);
+          attempt = 0;
+        } catch (err) {
+          if (err instanceof PlainError) return settle({ ...view, status: 'error', error: err.message });
+        }
+        res = null;
+        await wait(Math.min(1000 * 2 ** attempt, 15_000));
+      }
+      if (alive.current) settle({ ...view, status: 'error', error: copy.errors.cutOff });
+    },
+    [settle],
+  );
+
+  // Coming back to this screen: show a message the server is still working on, or how one ended while away.
+  useEffect(() => {
+    if (!live || !initialAgentId) return;
+    let cancelled = false;
+    (async () => {
+      const res = await fetch(`/api/agents/${encodeURIComponent(initialAgentId)}/build`, { cache: 'no-store' }).catch(() => null);
+      const body = res?.ok ? ((await res.json().catch(() => null)) as { job?: BuildView | null } | null) : null;
+      if (cancelled || !alive.current || !body) return;
+      const found = body.job ?? null;
+      if (found && found.id !== saved?.doneJob) {
+        if (found.status === 'running') void follow(initialAgentId, null, found);
+        else settle(found);
+      } else if (saved?.jobId && saved.jobId !== found?.id) {
+        // It was being worked on when this screen closed, and the server no longer knows it.
+        setMessages((prev) => [...prev, { role: 'agent', text: copy.errors.cutOff }]);
+        setPendingJob(undefined);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Once, on arrival: later messages are followed by `sendLive`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const say = useCallback((m: Msg) => void (alive.current && setMessages((prev) => [...prev, m])), []);
   const asked = messages.filter((m) => m.role === 'user').length;
 
   /** Scripted build for preview mode. */
   async function sendDemo(text: string) {
     say({ role: 'user', text });
-    setThinking(true);
+    setDemoThinking(true);
     await wait(900);
     if (!alive.current) return;
     if (asked === 0) {
       say({ role: 'agent', text: SAMPLE_BUILD.reply });
       setDraft((d) => ({ ...d, name: SAMPLE_BUILD.agent.name }));
-      setThinking(false);
+      setDemoThinking(false);
       return;
     }
     say({ role: 'agent', text: SAMPLE_BUILD.plan });
-    setThinking(false);
+    setDemoThinking(false);
     for (let s = 1; s <= 4; s++) {
       if (!alive.current) return;
       setStep(s);
@@ -132,10 +254,10 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
   /** Scripted change for preview mode (Make changes tab). */
   async function sendDemoEdit(text: string) {
     say({ role: 'user', text });
-    setThinking(true);
+    setDemoThinking(true);
     await wait(700);
     if (!alive.current) return;
-    setThinking(false);
+    setDemoThinking(false);
     for (let s = 2; s <= 4; s++) {
       if (!alive.current) return;
       setStep(s);
@@ -146,10 +268,11 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
     say({ role: 'agent', text: SAMPLE_EDIT.reply });
   }
 
-  /** The real thing: make the agent on the first message, then stream the builder's work. */
+  /** The real thing: make the agent on the first message, then start the builder's work on the server and follow it. */
   async function sendLive(text: string) {
-    say({ role: 'user', text });
-    setThinking(true);
+    const startView = (id: string) => newView(id, text, Date.now());
+    // Shown at once; replaced by the server's job as soon as it answers.
+    setJob(startView('starting'));
     setStep(0);
     let id = agentId;
     try {
@@ -169,71 +292,30 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, thread }),
       });
+      if (res.status === 409) {
+        // Already being worked on (another tab, or a double send): follow that one instead.
+        setJob(null);
+        const snap = (await fetch(`/api/agents/${encodeURIComponent(id)}/build`, { cache: 'no-store' }).then((r) => r.json()).catch(() => null)) as { job?: BuildView | null } | null;
+        if (snap?.job?.status === 'running') return void (await follow(id, null, snap.job));
+        throw new PlainError(copy.errors.busy);
+      }
       if (!res.ok || !res.body) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new PlainError(apiMessage(body.error));
       }
-
-      // The agent's reply grows in one bubble as text arrives.
-      let started = false;
-      let ended = false; // the stream said it was finished (done or error)
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      const apply = (e: BuildEvent) => {
-        if (!alive.current) return;
-        switch (e.type) {
-          case 'text':
-            setThinking(false);
-            setMessages((prev) => {
-              if (!started) {
-                started = true;
-                return [...prev, { role: 'agent', text: e.delta }];
-              }
-              const last = prev[prev.length - 1];
-              return last && last.role === 'agent' ? [...prev.slice(0, -1), { role: 'agent', text: last.text + e.delta }] : [...prev, { role: 'agent', text: e.delta }];
-            });
-            break;
-          case 'preview':
-            setDraft({ name: e.preview.name, does: e.preview.does, helpers: e.preview.helpers, costUsd: e.preview.costUsd });
-            break;
-          case 'progress':
-            setStep(e.step === 'ready' ? 5 : BUILD_STEPS.indexOf(e.step as BuildStep) + 1);
-            break;
-          case 'thread':
-            setThread(e.token);
-            break;
-          case 'live':
-            say({ role: 'agent', text: copy.edit.live[e.state] });
-            if (e.state === 'updated') toast.success(copy.edit.live.updated);
-            break;
-          case 'done':
-            ended = true;
-            break;
-          case 'error':
-            ended = true;
-            setThinking(false);
-            say({ role: 'agent', text: e.message });
-            break;
-        }
-      };
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const { events, rest } = decodeEvents(buf);
-        buf = rest;
-        events.forEach(apply);
-      }
-      // A stream that stops without saying it is finished was cut off (for example by a timeout).
-      if (!ended) say({ role: 'agent', text: copy.errors.cutOff });
+      const jobIdHeader = res.headers.get('X-Build-Job') ?? crypto.randomUUID();
+      setPendingJob(jobIdHeader);
+      await follow(id, res, startView(jobIdHeader));
     } catch (err) {
-      say({ role: 'agent', text: plainOf(err) });
-    } finally {
-      if (alive.current) setThinking(false);
-      // What the agent is called and what it does may have changed: the page above the chat shows them.
-      if (editing && id) router.refresh();
+      settle({ ...startView(`failed-${Date.now()}`), status: 'error', error: plainOf(err) });
     }
+  }
+
+  /** Asks the server to stop the message it is working on. The stream then ends with a plain note. */
+  async function stop() {
+    if (!agentId || stopping) return;
+    setStopping(true);
+    await fetch(`/api/agents/${encodeURIComponent(agentId)}/build`, { method: 'DELETE' }).catch(() => null);
   }
 
   async function send() {
@@ -245,8 +327,11 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
     else await sendLive(text);
   }
 
-  const done = step === 5;
-  const empty = !draft.name && !draft.does && draft.helpers.length === 0;
+  const shown = job ? [...messages, ...bubblesOf(job)] : messages;
+  const view = job?.preview ? draftOf(job.preview) : draft;
+  const atStep = job ? job.step : step;
+  const done = atStep === 5;
+  const empty = !view.name && !view.does && view.helpers.length === 0;
   const locked = mode === 'off' || (demo && step > 0);
   const stepLabels = editing ? copy.edit.steps : copy.create.steps;
   const chatTitle = editing ? copy.edit.chatTitle : copy.create.chatTitle;
@@ -262,20 +347,26 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5" aria-live="polite">
             {mode === 'off' ? (
               <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{copy.create.notReady}</p>
-            ) : messages.length === 0 ? (
+            ) : shown.length === 0 ? (
               <p className="text-sm text-muted-foreground">{editing ? (editing.live ? copy.edit.introLive : copy.edit.intro) : copy.create.placeholder}</p>
             ) : null}
-            {messages.map((m, i) => (
+            {shown.map((m, i) => (
               <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
                 <p className={cn('max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-6 whitespace-pre-wrap', m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-secondary text-secondary-foreground')}>{m.text}</p>
               </div>
             ))}
             {thinking ? (
-              <div className="flex justify-start">
+              <div className="flex items-center justify-between gap-2">
                 <p className="flex items-center gap-2 rounded-2xl bg-secondary px-4 py-2.5 text-sm text-muted-foreground">
                   <Loader2 className="size-3.5 animate-spin" aria-hidden />
                   {copy.agent.working}
                 </p>
+                {live && job && job.id !== 'starting' ? (
+                  <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => void stop()} disabled={stopping}>
+                    <Square className="size-3" aria-hidden />
+                    {copy.create.stop}
+                  </Button>
+                ) : null}
               </div>
             ) : null}
             <div ref={endRef} />
@@ -337,14 +428,14 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
                 <p className="text-sm text-muted-foreground">{copy.create.previewEmpty}</p>
               ) : (
                 <>
-                  <Field label={copy.create.nameLabel}>{draft.name ?? <Pending />}</Field>
-                  <Field label={copy.create.doesLabel}>{draft.does ?? <Pending />}</Field>
+                  <Field label={copy.create.nameLabel}>{view.name ?? <Pending />}</Field>
+                  <Field label={copy.create.doesLabel}>{view.does ?? <Pending />}</Field>
                   <Field label={copy.create.helpersLabel}>
-                    {draft.helpers.length === 0 ? (
+                    {view.helpers.length === 0 ? (
                       <span className="text-muted-foreground">{copy.create.helpersNone}</span>
                     ) : (
                       <ul className="space-y-2">
-                        {draft.helpers.map((h) => (
+                        {view.helpers.map((h) => (
                           <li key={h.name} className="flex items-start justify-between gap-3">
                             <span>
                               <span className="block font-medium">{h.name}</span>
@@ -357,9 +448,9 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
                     )}
                   </Field>
                   <Field label={copy.create.costLabel}>
-                    {draft.costUsd ? (
+                    {view.costUsd ? (
                       <>
-                        <span className="font-medium tabular-nums">{formatUsd(draft.costUsd)}</span>
+                        <span className="font-medium tabular-nums">{formatUsd(view.costUsd)}</span>
                         <span className="mt-0.5 block text-xs text-muted-foreground">{copy.create.costNote}</span>
                       </>
                     ) : (
@@ -372,7 +463,7 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
           </Card>
         )}
 
-        {editing && step === 0 && !thinking ? null : (
+        {editing && atStep === 0 && !thinking ? null : (
           <Card className="gap-0 py-0 shadow-none">
             <CardHeader className="gap-0 border-b px-5 py-4">
               <CardTitle className="text-[15px]">{copy.create.stepsTitle}</CardTitle>
@@ -381,7 +472,7 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
               <ol className="space-y-3">
                 {stepLabels.map((label, i) => {
                   const n = i + 1;
-                  const state = step > n || step === 5 ? 'done' : step === n ? 'active' : 'todo';
+                  const state = atStep > n || atStep === 5 ? 'done' : atStep === n ? 'active' : 'todo';
                   return (
                     <li key={label} className="flex items-center gap-3 text-sm" aria-current={state === 'active' ? 'step' : undefined}>
                       {state === 'done' ? (

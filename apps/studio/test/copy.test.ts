@@ -42,7 +42,7 @@ describe('every error code has plain words', () => {
   const plain = new Set<string>(Object.values(copy.errors));
 
   it('each code Studio\'s API can send maps to one of the written messages', () => {
-    for (const code of [...codes, 'signed-out', 'preview', 'not-configured', 'forbidden', undefined, 'something-new']) expect(plain.has(apiMessage(code)), String(code)).toBe(true);
+    for (const code of [...codes, 'signed-out', 'preview', 'not-configured', 'forbidden', 'busy', undefined, 'something-new']) expect(plain.has(apiMessage(code)), String(code)).toBe(true);
   });
   it('a service being down says so, instead of the generic line', () => {
     expect(apiMessage('unavailable')).toBe(copy.errors.unavailable);

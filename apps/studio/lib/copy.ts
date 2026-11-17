@@ -61,6 +61,7 @@ export const copy = {
     creditSent: (amount: string) => `Your agent starts with ${amount} of credit.`,
     creditNone: 'Your agent was created without starter credit, so it cannot hire helpers yet.',
     continueHint: 'Want a change? Just say what to adjust.',
+    stop: 'Stop',
     resume: 'Continue where you left off',
   },
 
@@ -162,6 +163,7 @@ export const copy = {
     badInput: 'Please check what you entered and try again.',
     notSwitchedOn: 'This is not switched on yet. Please check back soon.',
     forbidden: 'That did not come from Studio. Please reload the page and try again.',
+    busy: 'Your agent is still being worked on. Please wait for it to finish.',
   },
 
   notFound: { title: 'Nothing here', body: 'That page does not exist, or it is not yours.', back: 'Back to your agents' },
@@ -197,6 +199,8 @@ export function apiMessage(code: string | undefined, kind?: string): string {
       return e.unavailable;
     case 'forbidden':
       return e.forbidden;
+    case 'busy':
+      return e.busy;
     default:
       return e.generic;
   }
