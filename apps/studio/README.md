@@ -23,11 +23,13 @@ Settings are in [`.env.example`](.env.example). The Gateway needs `STUDIO_SERVIC
 | `lib/gateway/` | Session JWT and the `/internal/v1` client |
 | `lib/n8n/` | n8n REST (create the credential) and a small MCP client |
 | `lib/session*.ts`, `proxy.ts` | The Supabase session check and Studio's encrypted cookie |
-| `lib/builder/` | The builder: OpenAI loop, its tools, the agent template, `edit.ts` (turns "add this helper, change that instruction" into n8n's edit operations) |
+| `lib/builder/` | The builder: OpenAI loop, its tools, `workflow-json.ts` (Studio writes the whole agent; the model only says what it is), `edit.ts` (turns "add this helper, change that instruction" into n8n's edit operations), `jobs.ts` (each message runs as a background job that a reload reattaches to), `events.ts` (the events and the one reducer the server and the browser share) |
 | `lib/n8n/policy.ts`, `relay.ts` | What an agent's workflow may contain, and the guarded way Studio reaches n8n |
 | `lib/sample.ts` | Sample data for preview mode |
 
-Studio has no database. Sign-in is Supabase's; agents are Gateway listings tagged `zynd-studio`.
+Studio has no database. Sign-in is Supabase's; agents are Gateway listings tagged `zynd-studio`. Builder messages run as in-memory jobs in Studio's one process: a reload or a closed tab does not stop them, but a restart of Studio does (the screen then says the message was interrupted).
+
+Do not run `npm run build:studio` while `npm run dev:studio` is running: both write to `apps/studio/.next`, and the dev server stops or reloads the page in a loop. If that happens, stop it, move `.next` aside and start it again.
 
 ## Preview mode
 

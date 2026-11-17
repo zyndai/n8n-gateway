@@ -1,5 +1,7 @@
 // Sample data for preview mode (STUDIO_PREVIEW=1): what the screens look like with three agents and some use.
 import type { ActivityItem, Agent, ChatTurn, Helper } from './types';
+import type { Activity, BuildEvent, Part, PartState } from './builder/events';
+import { copy } from './copy';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 
@@ -85,3 +87,86 @@ export const SAMPLE_EDIT = {
   suggestion: 'Also check sanctions lists',
   reply: 'Done. I added a sanctions check to your agent and tried it on a sample supplier: it came back clean. Your live agent now uses the change.',
 } as const;
+
+// --- S5.3: the scripted build and change, as the same events a real build sends, so preview mode shows the same
+// picture filling in. Each entry waits `ms`, then applies the event.
+type Scripted = [ms: number, event: BuildEvent];
+
+const sampleParts = (state: PartState, tools: Part[] = [], main: PartState = state): Part[] => [
+  { id: 'network', kind: 'network', state: main === 'used' || main === 'testing' ? 'ready' : main },
+  { id: 'chat', kind: 'chat', state: main },
+  { id: 'request', kind: 'request', state: main },
+  { id: 'brain', kind: 'brain', state: main },
+  ...tools,
+  { id: 'answer', kind: 'answer', state: main },
+];
+const sampleTools = (state: PartState, cost = false): Part[] =>
+  SAMPLE_HELPERS.map((h) => ({ id: `tool:${h.name}`, kind: 'helper', label: h.name, detail: h.what, priceUsd: h.priceUsd, state, ...(cost ? { costUsd: h.priceUsd } : {}) }));
+const act = (id: string, label: string, state: Activity['state'] = 'running'): BuildEvent => ({ type: 'activity', activity: { id, label, state } });
+
+/** The first message: the builder asks two questions and names the agent. */
+export const SAMPLE_BUILD_ASK: Scripted[] = [
+  [700, { type: 'text', delta: SAMPLE_BUILD.reply }],
+  [200, { type: 'done' }],
+];
+
+/** The follow-up: find helpers, plan, build, try it, ready. */
+export function sampleBuildScript(): Scripted[] {
+  const b = copy.build;
+  const preview = { name: SAMPLE_BUILD.agent.name, does: SAMPLE_BUILD.agent.does, helpers: [...SAMPLE_HELPERS], costUsd: SAMPLE_BUILD.agent.costUsd, suggestedPriceUsd: '0.15' };
+  return [
+    [500, { type: 'progress', step: 'finding' }],
+    [0, act('s1', b.searching('company registry check'))],
+    [900, act('s1', b.found('3'), 'done')],
+    [200, act('s2', b.searching('crypto address risk'))],
+    [900, act('s2', b.found('2'), 'done')],
+    [300, { type: 'text', delta: SAMPLE_BUILD.plan }],
+    [300, { type: 'preview', preview }],
+    [0, { type: 'blueprint', parts: sampleParts('planned', sampleTools('planned')) }],
+    [0, act('s3', b.planned(SAMPLE_BUILD.agent.name), 'done')],
+    [600, { type: 'progress', step: 'building' }],
+    [0, act('s4', b.saving)],
+    [0, { type: 'blueprint', parts: sampleParts('building', sampleTools('building')) }],
+    [1400, { type: 'blueprint', parts: sampleParts('ready', sampleTools('ready')) }],
+    [0, act('s4', b.saved, 'done')],
+    [500, { type: 'progress', step: 'testing' }],
+    [0, act('s5', b.trying('Check Acme Trading Ltd, paying to 0x52…a1'))],
+    [0, { type: 'blueprint', parts: sampleParts('testing', sampleTools('testing')) }],
+    [1800, act('s6', b.helperUsed('Counterparty Check', '$0.05'), 'done')],
+    [600, act('s7', b.helperUsed('Wallet Risk Screener', '$0.03'), 'done')],
+    [400, { type: 'blueprint', parts: sampleParts('ready', sampleTools('used', true), 'used') }],
+    [0, act('s5', b.answered('Check Acme Trading Ltd, paying to 0x52…a1', '7'), 'done')],
+    [500, { type: 'progress', step: 'ready' }],
+    [0, act('s8', b.ready, 'done')],
+    [0, { type: 'text', delta: `\n\n${copy.create.ready}` }],
+    [100, { type: 'done' }],
+  ];
+}
+
+/** The Make changes tab: read the agent, add a sanctions helper, try it, and the change goes live. */
+export function sampleEditScript(): Scripted[] {
+  const b = copy.build;
+  const sanctions: Part = { id: 'tool:Sanctions Screen', kind: 'helper', label: 'Sanctions Screen', detail: 'Checks a name against sanctions lists', priceUsd: '0.02', state: 'ready' };
+  return [
+    [400, { type: 'progress', step: 'building' }],
+    [0, act('e1', b.reading)],
+    [700, { type: 'blueprint', parts: sampleParts('ready', sampleTools('ready')) }],
+    [0, act('e1', b.reading, 'done')],
+    [300, act('e2', b.searching('sanctions list check'))],
+    [800, act('e2', b.found('1'), 'done')],
+    [200, act('e3', b.changing)],
+    [0, { type: 'blueprint', parts: sampleParts('ready', [...sampleTools('ready'), { ...sanctions, state: 'building' }]) }],
+    [1100, { type: 'blueprint', parts: sampleParts('ready', [...sampleTools('ready'), sanctions]) }],
+    [0, act('e3', b.changed, 'done')],
+    [400, { type: 'progress', step: 'testing' }],
+    [0, act('e4', b.trying('Check Acme Trading Ltd'))],
+    [0, { type: 'blueprint', parts: sampleParts('testing', [...sampleTools('testing'), { ...sanctions, state: 'testing' }]) }],
+    [1600, act('e5', b.helperUsed('Sanctions Screen', '$0.02'), 'done')],
+    [300, { type: 'blueprint', parts: sampleParts('ready', [...sampleTools('ready'), { ...sanctions, state: 'used', costUsd: '0.02' }], 'used') }],
+    [0, act('e4', b.answered('Check Acme Trading Ltd', '5'), 'done')],
+    [400, { type: 'progress', step: 'ready' }],
+    [0, act('e6', b.ready, 'done')],
+    [0, { type: 'text', delta: SAMPLE_EDIT.reply }],
+    [100, { type: 'done' }],
+  ];
+}

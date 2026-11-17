@@ -13,7 +13,9 @@ import { RelayRefusal, type WorkflowRelay } from '../n8n/relay';
 import { fromMicro, toMicro, toolKey, type RunView } from '../n8n/runs';
 import type { HelperCard } from '../registry';
 import type { Helper } from '../types';
-import { BUILD_STEPS, type BuildEvent, type BuildStep, type Preview } from './events';
+import { copy } from '../copy';
+import { formatUsd } from '../format';
+import { BUILD_STEPS, type BuildEvent, type BuildStep, type Part, type PartState, type Preview } from './events';
 import { NAME_LIMIT, SUMMARY_LIMIT } from './limits';
 import type { AgentEdit, ToolInfo } from './edit';
 import type { AgentSpec, RenderedTool } from './workflow-json';
@@ -138,6 +140,15 @@ export const TOOL_SPECS: ToolSpec[] = [
 
 const NAMES = new Set(TOOL_SPECS.map((s) => s.name));
 
+/** A tool as the picture of the agent needs it. */
+interface ShownTool {
+  name: string;
+  kind: 'helper' | 'data source' | 'web';
+  what?: string;
+  maxPriceUsd?: string;
+}
+const quote = (text: string) => (text.length > 70 ? `${text.slice(0, 67).trimEnd()}…` : text);
+
 /** The input type a helper gets: what its card allows, else what the model asked, else plain text. */
 export function inputFor(card: HelperCard, asked: unknown): 'text' | 'json' {
   const modes = card.inputModes ?? [];
@@ -159,6 +170,44 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
   const flipped = new Set<string>();
   let checkedCredit = false;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  // --- The picture of the agent and the activity lines (S5.3). Studio's own facts, never the model's account. ---
+  let lines = 0;
+  let shownTools: ShownTool[] = [];
+  let brainDetail: string | undefined;
+  const say = (label: string, state: 'running' | 'done' | 'failed' = 'running', id = `a${++lines}`): string => {
+    deps.emit({ type: 'activity', activity: { id, label, state } });
+    return id;
+  };
+  const toolPart = (t: ShownTool, state: PartState): Part => ({
+    id: `tool:${t.name}`,
+    kind: t.kind === 'data source' ? 'source' : t.kind,
+    label: t.name,
+    ...(t.what ? { detail: t.what.slice(0, 100) } : {}),
+    ...(t.maxPriceUsd ? { priceUsd: t.maxPriceUsd } : {}),
+    state,
+  });
+  /** Shows every part in `state`; `tool` may give a tool its own state (after a test). */
+  const show = (state: PartState, tool?: (t: ShownTool) => Partial<Part>, main: PartState = state) => {
+    const base = (id: Part['kind']): Part => ({ id, kind: id, state: main });
+    deps.emit({
+      type: 'blueprint',
+      parts: [
+        // A test runs through the in-app chat: the way in for other agents stays as it is.
+        { ...base('network'), state: main === 'used' || main === 'testing' ? 'ready' : main },
+        base('chat'),
+        base('request'),
+        { ...base('brain'), ...(brainDetail ? { detail: brainDetail } : {}) },
+        ...shownTools.map((t) => ({ ...toolPart(t, state), ...tool?.(t) })),
+        base('answer'),
+      ],
+    });
+  };
+  const fromSpec = (sp: AgentSpec): ShownTool[] => [
+    ...sp.helpers.map((h) => ({ name: h.card.name, kind: 'helper' as const, what: h.card.what, maxPriceUsd: h.card.priceUsd })),
+    ...sp.sources.map((x) => ({ name: x.name, kind: 'data source' as const, what: x.what, maxPriceUsd: x.maxPriceUsd })),
+    ...(sp.web ? [{ name: 'Web page reader', kind: 'web' as const }] : []),
+  ];
 
   const findSources = (names: unknown): DataSource[] | string => {
     const out: DataSource[] = [];
@@ -225,6 +274,13 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
     await deps.save({ name, summary: description, ...(deps.relay.workflowId ? {} : { priceUsd: price }) });
     deps.listing.name = name;
     deps.emit({ type: 'preview', preview });
+    brainDetail = description;
+    const building = !deps.relay.workflowId;
+    if (building) {
+      shownTools = [...helpers.map((h) => ({ name: h.name, kind: 'helper' as const, what: h.what, maxPriceUsd: h.priceUsd })), ...sources.map((x) => ({ name: x.name, kind: 'data source' as const, what: x.what, maxPriceUsd: x.maxPriceUsd }))];
+      show('planned');
+    }
+    say(building ? copy.build.planned(name) : copy.build.described(name), 'done');
     return ok({ shown: true, cost_per_use_usd: preview.costUsd });
   }
 
@@ -248,7 +304,21 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
     const sources = findSources(a.data_sources);
     if (typeof sources === 'string') return fail(sources);
     if (helpers.length + sources.length > MAX_TOOLS) return fail(`Use at most ${MAX_TOOLS} helpers and data sources together: each one costs money every time it is used.`);
-    const out = await save({ instructions, helpers, sources, web: a.web === true });
+    const next: AgentSpec = { instructions, helpers, sources, web: a.web === true };
+    const line = say(copy.build.saving);
+    shownTools = fromSpec(next);
+    show('building');
+    let out: Awaited<ReturnType<typeof save>>;
+    try {
+      out = await save(next);
+    } catch (err) {
+      say(copy.build.savingFailed, 'failed', line);
+      show('planned');
+      throw err;
+    }
+    shownTools = out.tools;
+    show('ready');
+    say(copy.build.saved, 'done', line);
     return ok({
       saved: true,
       tools: out.tools.map((t) => ({ ...toolView(t), ...(t.input ? { input: t.input } : {}) })),
@@ -259,7 +329,11 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
 
   async function agentSetup(): Promise<string> {
     if (!deps.relay.workflowId) return fail('This agent has no version yet: build it with build_agent first.');
+    const line = say(copy.build.reading);
     const { instructions, tools } = await deps.relay.setup();
+    shownTools = tools;
+    show('ready');
+    say(copy.build.reading, 'done', line);
     return ok({ instructions, tools: tools.map(toolView) });
   }
 
@@ -285,7 +359,18 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
     if (Array.isArray(a.remove) && a.remove.length) edit.remove = a.remove.filter((n): n is string => typeof n === 'string');
     if (typeof a.web === 'boolean') edit.web = a.web;
 
-    const { result, tools } = await deps.relay.applyEdit(edit, deps.zyndCredentialName);
+    const line = say(copy.build.changing);
+    let applied: Awaited<ReturnType<typeof deps.relay.applyEdit>>;
+    try {
+      applied = await deps.relay.applyEdit(edit, deps.zyndCredentialName);
+    } catch (err) {
+      say(copy.build.changing, 'failed', line);
+      throw err;
+    }
+    const { result, tools } = applied;
+    shownTools = tools;
+    show('ready');
+    say(copy.build.changed, 'done', line);
     // An edit is not a whole spec: Studio cannot rebuild from it, so repairs are left to the model from here.
     spec = null;
     built = null;
@@ -306,6 +391,7 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
     if (balance === null || Number(balance) >= Math.min(...prices)) return null;
     st.noCredit = true;
     st.lastFailure = 'credit';
+    say(copy.build.noCredit, 'failed');
     return fail('The agent has no credit for its helpers, so it was not tested.', {
       kind: 'credit',
       balance_usd: balance,
@@ -317,11 +403,34 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
   async function runOnce(question: string): Promise<RunView | string> {
     st.tests += 1;
     deps.emit({ type: 'progress', step: 'testing' });
+    const line = say(copy.build.trying(quote(question)));
+    show('testing');
+    const started = Date.now();
+    const settled = (run: RunView | string): RunView | string => {
+      if (typeof run === 'string') {
+        say(copy.build.noAnswer, 'failed', line);
+        show('ready');
+        return run;
+      }
+      const byKey = new Map(run.helpers.map((h) => [toolKey(h.name), h]));
+      for (const h of run.helpers) say(h.ok ? copy.build.helperUsed(h.name, formatUsd(h.costUsd)) : copy.build.helperSilent(h.name), h.ok ? 'done' : 'failed');
+      const answered = run.status === 'success' && Boolean(run.answer);
+      show(
+        'ready',
+        (t) => {
+          const h = byKey.get(toolKey(t.name));
+          return h ? { state: h.ok ? 'used' : 'failed', ...(h.ok ? { costUsd: h.costUsd } : {}) } : {};
+        },
+        answered ? 'used' : 'ready',
+      );
+      say(answered ? copy.build.answered(quote(question), String(Math.max(1, Math.round((Date.now() - started) / 1000)))) : copy.build.noAnswer, answered ? 'done' : 'failed', line);
+      return run;
+    };
     let id: string;
     try {
       id = await deps.relay.startRun(question, 'manual');
     } catch (err) {
-      return describe(err);
+      return settled(describe(err));
     }
     const deadline = Date.now() + (deps.testTimeoutMs ?? 240_000);
     for (;;) {
@@ -330,11 +439,13 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
       try {
         run = await deps.relay.readRun(id);
       } catch (err) {
-        return describe(err);
+        return settled(describe(err));
       }
-      if (run.status !== 'running') return run;
+      if (run.status !== 'running') return settled(run);
       if (Date.now() > deadline) {
         st.lastFailure = 'timeout';
+        say(copy.build.noAnswer, 'failed', line);
+        show('ready');
         return fail('The test took too long.', { kind: 'timeout', hint: 'Make the instructions simpler or use fewer helpers, then test again once.' });
       }
     }
@@ -350,7 +461,7 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
    * Studio's own fix for tools that did not answer: another input type first, then (only when the agent gave no
    * answer at all) leaving them out.
    */
-  function repairFor(failing: RenderedTool[], mayDrop: boolean): { next: AgentSpec; notes: string[] } | null {
+  function repairFor(failing: RenderedTool[], mayDrop: boolean): { next: AgentSpec; notes: string[]; lines: string[] } | null {
     if (!spec || failing.length === 0 || st.repairs >= MAX_REPAIRS) return null;
     const refs = new Set(failing.map((t) => t.ref));
     const flips = spec.helpers.filter((h) => refs.has(h.card.entityId) && !flipped.has(h.card.entityId) && canFlip(h.card, h.input === 'json' ? 'text' : 'json'));
@@ -360,13 +471,14 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
       return {
         next: { ...spec, helpers: spec.helpers.map((h) => (ids.has(h.card.entityId) ? { card: h.card, input: h.input === 'json' ? 'text' : 'json' } : h)) },
         notes: flips.map((h) => `${h.card.name} did not answer, so Studio now sends it ${h.input === 'json' ? 'plain text' : 'a JSON object'}.`),
+        lines: flips.map((h) => copy.build.switched(h.card.name, h.input === 'json' ? copy.build.plainText : copy.build.namedFields)),
       };
     }
     if (!mayDrop) return null;
     const helpers = spec.helpers.filter((h) => !refs.has(h.card.entityId));
     const sources = spec.sources.filter((s) => !refs.has(`${s.listingUrl}|${s.operation}`));
     if (helpers.length === spec.helpers.length && sources.length === spec.sources.length) return null;
-    return { next: { ...spec, helpers, sources }, notes: failing.map((t) => `${t.name} did not answer, so Studio left it out for now.`) };
+    return { next: { ...spec, helpers, sources }, notes: failing.map((t) => `${t.name} did not answer, so Studio left it out for now.`), lines: failing.map((t) => copy.build.leftOut(t.name)) };
   }
 
   async function testAgent(a: Record<string, unknown>): Promise<string> {
@@ -399,11 +511,18 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
       const repair = repairFor(failing, !answered);
       if (repair && st.tests < (deps.maxTests ?? 4)) {
         st.repairs += 1;
+        const line = say(repair.lines.join('. '));
+        shownTools = fromSpec(repair.next);
+        show('building');
         try {
-          await save(repair.next);
+          const saved = await save(repair.next);
+          shownTools = saved.tools;
         } catch (err) {
+          say(repair.lines.join('. '), 'failed', line);
           return describe(err);
         }
+        show('ready');
+        say(repair.lines.join('. '), 'done', line);
         notes.push(...repair.notes);
         continue;
       }
@@ -427,7 +546,10 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
     const step = a.step as BuildStep;
     if (!BUILD_STEPS.includes(step)) return fail('Unknown step.');
     if (step === 'ready' && !st.tested) return fail('Not ready yet: run test_agent and get a working answer first (a test counts only for the current version).');
-    if (step === 'ready') st.ready = true;
+    if (step === 'ready') {
+      st.ready = true;
+      say(copy.build.ready, 'done');
+    }
     deps.emit({ type: 'progress', step });
     return ok({ shown: step });
   }
@@ -458,10 +580,19 @@ export function createBuilderTools(deps: BuilderToolsDeps): BuilderTools {
           case 'find_helpers': {
             const query = str(args.query, 200);
             if (!query) return fail('Send a search in "query".');
-            const cards = await deps.registry.search(query, 6);
+            const line = say(copy.build.searching(quote(query)));
+            let cards: HelperCard[];
+            try {
+              cards = await deps.registry.search(query, 6);
+            } catch (err) {
+              say(copy.build.foundNone, 'failed', line);
+              throw err;
+            }
+            say(cards.length ? copy.build.found(String(cards.length)) : copy.build.foundNone, 'done', line);
             return ok(cards.length ? cards.map((c) => ({ id: c.entityId, name: c.name, what: c.what, price_usd: c.priceUsd })) : { results: [], note: 'No active agents matched. Try other words, or build without helpers.' });
           }
           case 'list_data_sources':
+            say(copy.build.sources(String(deps.dataSources.length)), 'done');
             return ok(deps.dataSources.map((s) => ({ name: s.name, what: s.what, max_price_usd: s.maxPriceUsd, fields: s.fields ?? null })));
           case 'update_preview':
             return await updatePreview(args);

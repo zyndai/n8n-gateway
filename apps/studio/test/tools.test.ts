@@ -396,6 +396,56 @@ describe('builder tools', () => {
     });
   });
 
+  describe('the picture and the activity lines (S5.3)', () => {
+    const blueprints = () => events.filter((e): e is Extract<BuildEvent, { type: 'blueprint' }> => e.type === 'blueprint');
+    const lines = () => {
+      const byId = new Map<string, { label: string; state: string }>();
+      for (const e of events) if (e.type === 'activity') byId.set(e.activity.id, e.activity);
+      return [...byId.values()];
+    };
+    it('a search is one line that turns from running into what was found', async () => {
+      await call('find_helpers', { query: 'company check' });
+      const acts = events.filter((e) => e.type === 'activity');
+      expect(acts).toHaveLength(2);
+      expect(lines()).toEqual([{ id: 'a1', label: 'Found 3 possible helpers', state: 'done' }]);
+    });
+    it('the agent is planned, built, then ready, with its tools by name and price', async () => {
+      await call('update_preview', { name: 'Supplier Check', description: 'Checks suppliers.', helper_ids: [CHECK.entityId] });
+      await call('build_agent', { instructions: 'You check suppliers.', helpers: [{ id: CHECK.entityId }] });
+      expect(blueprints().map((b) => b.parts.find((p) => p.kind === 'helper')?.state)).toEqual(['planned', 'building', 'ready']);
+      const last = blueprints().at(-1)!.parts;
+      expect(last.map((p) => p.kind)).toEqual(['network', 'chat', 'request', 'brain', 'helper', 'answer']);
+      expect(last.find((p) => p.kind === 'helper')).toMatchObject({ label: 'Counterparty Check', priceUsd: '0.05' });
+      expect(lines().map((l) => l.label)).toEqual(['Planned "Supplier Check"', 'Your agent is put together and saved']);
+    });
+    it('a test lights up the helpers it used, with what each cost, and says how long it took', async () => {
+      // The ledger takes JSON only, so Studio has nothing to switch: the picture shows the test as it was.
+      await call('build_agent', { instructions: 'You check suppliers.', helpers: [{ id: CHECK.entityId }, { id: JSON_ONLY.entityId, input: 'json' }] });
+      mcp.executions.set('100', finishedRun({ answer: 'Fine.', steps: [step('Counterparty_Check'), step('Ledger_Lookup', false)] }));
+      await call('test_agent', { question: 'Check ACME Ltd' });
+      const parts = blueprints().at(-1)!.parts;
+      expect(parts.find((p) => p.label === 'Counterparty Check')).toMatchObject({ state: 'used', costUsd: '0.050000' });
+      expect(parts.find((p) => p.label === 'Ledger Lookup')?.state).toBe('failed');
+      expect(parts.find((p) => p.kind === 'answer')?.state).toBe('used');
+      const trying = blueprints().find((b) => b.parts.some((p) => p.state === 'testing'))!.parts;
+      expect(trying.filter((p) => p.state !== 'testing').map((p) => p.kind)).toEqual(['network']);
+      expect(lines().map((l) => l.label)).toEqual(expect.arrayContaining(['Counterparty Check answered · $0.05', 'Ledger Lookup did not answer', expect.stringMatching(/^Tried "Check ACME Ltd": it answered in \d+ s$/)]));
+    });
+    it('a repair shows as its own line, and the picture follows the change', async () => {
+      await call('build_agent', { instructions: 'You check suppliers.', helpers: [{ id: CHECK.entityId, input: 'json', fields: 'companyName' }] });
+      mcp.executions.set('100', finishedRun({ status: 'error', answer: '', steps: [step('Counterparty_Check', false)], error: 'Agent task failed' }));
+      mcp.executions.set('101', finishedRun({ answer: 'Fine.', steps: [step('Counterparty_Check')] }));
+      await call('test_agent', { question: 'x' });
+      expect(lines().map((l) => l.label)).toContain('Counterparty Check did not answer, so it now gets plain text');
+      expect(lines().every((l) => l.state !== 'running')).toBe(true);
+    });
+    it('a failed save is a failed line, never one left spinning', async () => {
+      mcp.failTool['rest:create'] = 'down';
+      await call('build_agent', { instructions: 'x' });
+      expect(lines()).toEqual([{ id: 'a1', label: 'Could not put your agent together', state: 'failed' }]);
+    });
+  });
+
   describe('anything else', () => {
     it('refuses the raw n8n tools the model used to have', async () => {
       for (const name of ['create_workflow_from_code', 'update_workflow', 'get_template', 'get_workflow_details']) expect((await call(name, { code: 'x' })).error).toMatch(/does not exist/);

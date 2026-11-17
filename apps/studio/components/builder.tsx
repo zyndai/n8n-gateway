@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, Circle, Loader2, Send, Sparkles, Square } from 'lucide-react';
+import { Loader2, Send, Sparkles, Square } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -8,10 +8,11 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { applyEvent, decodeEvents, newView, type BuildView, type Preview } from '@/lib/builder/events';
+import { AgentBlueprint, BuildActivity, partsFromDraft } from '@/components/agent-blueprint';
+import { applyEvent, currentActivity, decodeEvents, newView, type Activity, type BuildEvent, type BuildView, type Part, type Preview } from '@/lib/builder/events';
 import { apiMessage, copy } from '@/lib/copy';
 import { formatUsd } from '@/lib/format';
-import { SAMPLE_BUILD, SAMPLE_EDIT } from '@/lib/sample';
+import { SAMPLE_BUILD, SAMPLE_BUILD_ASK, SAMPLE_EDIT, sampleBuildScript, sampleEditScript } from '@/lib/sample';
 import { useStoredText } from '@/lib/use-stored';
 import type { BuilderMode, Helper } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -37,6 +38,9 @@ interface Saved {
   jobId?: string;
   /** The last job already shown, so it is not shown twice. */
   doneJob?: string;
+  /** The picture of the agent and the activity of the last message (S5.3). */
+  parts?: Part[];
+  activity?: Activity[];
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -90,6 +94,8 @@ function parseSaved(raw: string | null | undefined): Saved | null {
       thread: s.thread ?? null,
       ...(typeof s.jobId === 'string' ? { jobId: s.jobId } : {}),
       ...(typeof s.doneJob === 'string' ? { doneJob: s.doneJob } : {}),
+      ...(Array.isArray(s.parts) ? { parts: s.parts.slice(0, 40) } : {}),
+      ...(Array.isArray(s.activity) ? { activity: s.activity.slice(-40) } : {}),
     };
   } catch {
     return null;
@@ -115,7 +121,8 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
   const [input, setInput] = useState(initialIdea ?? '');
   const [draft, setDraft] = useState<Draft>(saved?.draft ?? { helpers: [] });
   const [step, setStep] = useState(editing ? 0 : (saved?.step ?? 0)); // 0 not started; 1..4 = the step in progress; 5 = all done
-  const [demoThinking, setDemoThinking] = useState(false);
+  const [parts, setParts] = useState<Part[]>(saved?.parts ?? []);
+  const [activity, setActivity] = useState<Activity[]>(saved?.activity ?? []);
   const [agentId, setAgentId] = useState<string | undefined>(initialAgentId);
   const [thread, setThread] = useState<string | null>(saved?.thread ?? null);
   // The message the server is working on now (S5.2). It runs on the server: a reload only reattaches to it.
@@ -139,14 +146,14 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
   useEffect(() => {
     if (!live || !agentId) return;
     try {
-      const value: Saved = { messages: messages.slice(-60), draft, step, thread, ...(jobId ? { jobId } : {}), ...(doneJob ? { doneJob } : {}) };
+      const value: Saved = { messages: messages.slice(-60), draft, step, thread, parts, activity, ...(jobId ? { jobId } : {}), ...(doneJob ? { doneJob } : {}) };
       window.localStorage.setItem(storeKey(agentId), JSON.stringify(value));
     } catch {
       /* storage is a convenience: without it the chat just does not come back after a reload */
     }
-  }, [live, agentId, messages, draft, step, thread, jobId, doneJob]);
+  }, [live, agentId, messages, draft, step, thread, parts, activity, jobId, doneJob]);
 
-  const thinking = demoThinking || job?.status === 'running';
+  const thinking = job?.status === 'running';
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, thinking, job?.reply]);
@@ -158,6 +165,8 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
       setMessages((prev) => [...prev, ...bubblesOf(v)]);
       if (v.thread) setThread(v.thread);
       if (v.preview) setDraft(draftOf(v.preview));
+      if (v.parts.length) setParts(v.parts);
+      if (v.activity.length) setActivity(v.activity);
       setStep(v.step);
       setDoneJob(v.id);
       setPendingJob(undefined);
@@ -222,50 +231,29 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const say = useCallback((m: Msg) => void (alive.current && setMessages((prev) => [...prev, m])), []);
   const asked = messages.filter((m) => m.role === 'user').length;
 
-  /** Scripted build for preview mode. */
-  async function sendDemo(text: string) {
-    say({ role: 'user', text });
-    setDemoThinking(true);
-    await wait(900);
-    if (!alive.current) return;
-    if (asked === 0) {
-      say({ role: 'agent', text: SAMPLE_BUILD.reply });
-      setDraft((d) => ({ ...d, name: SAMPLE_BUILD.agent.name }));
-      setDemoThinking(false);
-      return;
-    }
-    say({ role: 'agent', text: SAMPLE_BUILD.plan });
-    setDemoThinking(false);
-    for (let s = 1; s <= 4; s++) {
+  /** Preview mode: plays a scripted message through the same view a real build uses. */
+  async function play(text: string, script: [number, BuildEvent][]) {
+    let v = newView(`sample-${Date.now()}`, text, Date.now());
+    setJob(v);
+    for (const [ms, e] of script) {
+      if (ms) await wait(ms);
       if (!alive.current) return;
-      setStep(s);
-      if (s === 1) setDraft((d) => ({ ...d, helpers: SAMPLE_BUILD.agent.helpers }));
-      if (s === 2) setDraft((d) => ({ ...d, does: SAMPLE_BUILD.agent.does, costUsd: SAMPLE_BUILD.agent.costUsd }));
-      await wait(1100);
+      v = applyEvent(v, e);
+      setJob(v);
     }
-    if (!alive.current) return;
-    setStep(5);
-    say({ role: 'agent', text: copy.create.ready });
+    settle(v);
   }
 
-  /** Scripted change for preview mode (Make changes tab). */
-  async function sendDemoEdit(text: string) {
-    say({ role: 'user', text });
-    setDemoThinking(true);
-    await wait(700);
-    if (!alive.current) return;
-    setDemoThinking(false);
-    for (let s = 2; s <= 4; s++) {
-      if (!alive.current) return;
-      setStep(s);
-      await wait(1000);
+  /** Scripted build for preview mode: two questions first, then the build. */
+  async function sendDemo(text: string) {
+    if (asked === 0) {
+      await play(text, SAMPLE_BUILD_ASK);
+      if (alive.current) setDraft((d) => ({ ...d, name: SAMPLE_BUILD.agent.name }));
+      return;
     }
-    if (!alive.current) return;
-    setStep(5);
-    say({ role: 'agent', text: SAMPLE_EDIT.reply });
+    await play(text, sampleBuildScript());
   }
 
   /** The real thing: make the agent on the first message, then start the builder's work on the server and follow it. */
@@ -323,7 +311,7 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
     if (!text || thinking || mode === 'off') return;
     if (demo && step > 0) return;
     setInput('');
-    if (demo) await (editing ? sendDemoEdit(text) : sendDemo(text));
+    if (demo) await (editing ? play(text, sampleEditScript()) : sendDemo(text));
     else await sendLive(text);
   }
 
@@ -336,6 +324,11 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
   const stepLabels = editing ? copy.edit.steps : copy.create.steps;
   const chatTitle = editing ? copy.edit.chatTitle : copy.create.chatTitle;
   const placeholder = editing ? copy.edit.placeholder : done && live ? copy.create.continueHint : copy.create.placeholder;
+  // The picture: what this message has shown so far, else the last one, else what the preview card knows.
+  const picture = job?.parts.length ? job.parts : parts.length ? parts : !empty && !editing ? partsFromDraft(view.helpers, done) : [];
+  const lines = job ? job.activity : activity;
+  const working = (job && currentActivity(job)?.label) || copy.agent.working;
+  const showAgent = !editing || picture.length > 0 || thinking;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
@@ -358,10 +351,10 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
             {thinking ? (
               <div className="flex items-center justify-between gap-2">
                 <p className="flex items-center gap-2 rounded-2xl bg-secondary px-4 py-2.5 text-sm text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                  {copy.agent.working}
+                  <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
+                  <span className="min-w-0 break-words">{working}</span>
                 </p>
-                {live && job && job.id !== 'starting' ? (
+                {live && job && job.id !== 'starting' && !job.id.startsWith('sample-') ? (
                   <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => void stop()} disabled={stopping}>
                     <Square className="size-3" aria-hidden />
                     {copy.create.stop}
@@ -418,87 +411,69 @@ function BuilderView({ mode, agentId: initialAgentId, initialIdea, editing, save
       </Card>
 
       <div className="space-y-6">
-        {editing ? null : (
+        {showAgent ? (
           <Card className="gap-0 py-0 shadow-none">
             <CardHeader className="gap-0 border-b px-5 py-4">
               <CardTitle className="text-[15px]">{copy.create.previewTitle}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5 px-5 py-5">
-              {empty ? (
-                <p className="text-sm text-muted-foreground">{copy.create.previewEmpty}</p>
+              {atStep > 0 || thinking || done ? <StepBar labels={stepLabels} at={atStep} /> : null}
+              {!editing && (view.name || view.does) ? (
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold">{view.name ?? <Pending />}</p>
+                  <p className="text-sm leading-6 text-muted-foreground">{view.does ?? <Pending />}</p>
+                </div>
+              ) : null}
+              {picture.length ? (
+                <AgentBlueprint parts={picture} />
               ) : (
-                <>
-                  <Field label={copy.create.nameLabel}>{view.name ?? <Pending />}</Field>
-                  <Field label={copy.create.doesLabel}>{view.does ?? <Pending />}</Field>
-                  <Field label={copy.create.helpersLabel}>
-                    {view.helpers.length === 0 ? (
-                      <span className="text-muted-foreground">{copy.create.helpersNone}</span>
-                    ) : (
-                      <ul className="space-y-2">
-                        {view.helpers.map((h) => (
-                          <li key={h.name} className="flex items-start justify-between gap-3">
-                            <span>
-                              <span className="block font-medium">{h.name}</span>
-                              <span className="block text-xs text-muted-foreground">{h.what}</span>
-                            </span>
-                            <span className="tabular-nums">{formatUsd(h.priceUsd)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </Field>
-                  <Field label={copy.create.costLabel}>
-                    {view.costUsd ? (
-                      <>
-                        <span className="font-medium tabular-nums">{formatUsd(view.costUsd)}</span>
-                        <span className="mt-0.5 block text-xs text-muted-foreground">{copy.create.costNote}</span>
-                      </>
-                    ) : (
-                      <Pending />
-                    )}
-                  </Field>
-                </>
+                <p className="text-sm text-muted-foreground">{copy.create.previewEmpty}</p>
               )}
-            </CardContent>
-          </Card>
-        )}
-
-        {editing && atStep === 0 && !thinking ? null : (
-          <Card className="gap-0 py-0 shadow-none">
-            <CardHeader className="gap-0 border-b px-5 py-4">
-              <CardTitle className="text-[15px]">{copy.create.stepsTitle}</CardTitle>
-            </CardHeader>
-            <CardContent className="px-5 py-5">
-              <ol className="space-y-3">
-                {stepLabels.map((label, i) => {
-                  const n = i + 1;
-                  const state = atStep > n || atStep === 5 ? 'done' : atStep === n ? 'active' : 'todo';
-                  return (
-                    <li key={label} className="flex items-center gap-3 text-sm" aria-current={state === 'active' ? 'step' : undefined}>
-                      {state === 'done' ? (
-                        <span className="grid size-5 place-items-center rounded-full bg-success text-white">
-                          <Check className="size-3" aria-hidden />
-                        </span>
-                      ) : state === 'active' ? (
-                        <Loader2 className="size-5 animate-spin text-primary" aria-hidden />
-                      ) : (
-                        <Circle className="size-5 text-muted-foreground/40" aria-hidden />
-                      )}
-                      <span className={cn(state === 'todo' ? 'text-muted-foreground' : 'font-medium')}>{label}</span>
-                    </li>
-                  );
-                })}
-              </ol>
+              {!editing && view.costUsd ? (
+                <Field label={copy.create.costLabel}>
+                  <span className="font-medium tabular-nums">{formatUsd(view.costUsd)}</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">{copy.create.costNote}</span>
+                </Field>
+              ) : null}
               {done && !editing ? (
-                <Button asChild className="mt-5 w-full">
+                <Button asChild className="w-full">
                   <Link href={demo ? '/agents/sample-supplier-check' : `/agents/${agentId ?? ''}`}>{copy.create.open}</Link>
                 </Button>
               ) : null}
             </CardContent>
           </Card>
-        )}
+        ) : null}
+
+        {lines.length ? (
+          <Card className="gap-0 py-0 shadow-none">
+            <CardHeader className="gap-0 border-b px-5 py-4">
+              <CardTitle className="text-[15px]">{copy.create.activityTitle}</CardTitle>
+            </CardHeader>
+            <CardContent className="max-h-72 overflow-y-auto px-5 py-4">
+              <BuildActivity items={lines} />
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+/** The four steps as a thin bar: done, the one in progress, still to come. */
+function StepBar({ labels, at }: { labels: readonly string[]; at: number }) {
+  return (
+    <ol className="grid grid-cols-4 gap-1.5" aria-label={copy.create.stepsTitle}>
+      {labels.map((label, i) => {
+        const n = i + 1;
+        const state = at > n || at === 5 ? 'done' : at === n ? 'active' : 'todo';
+        return (
+          <li key={label} aria-current={state === 'active' ? 'step' : undefined}>
+            <div className={cn('h-1 rounded-full transition-colors duration-500', state === 'done' ? 'bg-success' : state === 'active' ? 'animate-pulse bg-primary motion-reduce:animate-none' : 'bg-muted')} />
+            <span className={cn('mt-1.5 block text-[11px] leading-tight', state === 'todo' ? 'text-muted-foreground' : 'font-medium')}>{label}</span>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

@@ -19,6 +19,29 @@ export interface Preview {
 
 export type LiveState = 'updated' | 'held' | 'failed';
 
+/** One part of the agent as the person sees it being built (S5.3). Plain kinds, no technical names. */
+export type PartKind = 'network' | 'chat' | 'request' | 'brain' | 'helper' | 'source' | 'web' | 'answer';
+export type PartState = 'planned' | 'building' | 'ready' | 'testing' | 'used' | 'failed';
+export interface Part {
+  id: string;
+  kind: PartKind;
+  /** A tool's name, or what the agent does (for the brain). */
+  label?: string;
+  detail?: string;
+  /** The most one use of a paid tool may cost. */
+  priceUsd?: string;
+  /** What it cost in the last test. */
+  costUsd?: string;
+  state: PartState;
+}
+
+/** One line of what the builder is doing, in plain words. Sent again with the same id when it finishes. */
+export interface Activity {
+  id: string;
+  label: string;
+  state: 'running' | 'done' | 'failed';
+}
+
 export type BuildEvent =
   | { type: 'text'; delta: string }
   | { type: 'preview'; preview: Preview }
@@ -34,6 +57,9 @@ export type BuildEvent =
   | { type: 'done' }
   /** Plain words, with a next step. Never raw error text. */
   | { type: 'error'; message: string }
+  /** The agent's parts and their state, whole each time (S5.3). */
+  | { type: 'blueprint'; parts: Part[] }
+  | { type: 'activity'; activity: Activity }
   /** Keeps a quiet stream open through proxies. Carries nothing. */
   | { type: 'ping' };
 
@@ -55,12 +81,20 @@ export interface BuildView {
   live?: LiveState;
   error?: string;
   thread?: string;
+  /** The agent's parts as last shown, and what the builder did, newest last. */
+  parts: Part[];
+  activity: Activity[];
   /** The last event applied. */
   seq: number;
   startedAt: number;
 }
 
-export const newView = (id: string, message: string, startedAt: number): BuildView => ({ id, status: 'running', message, reply: '', step: 0, seq: 0, startedAt });
+const ACTIVITY_KEEP = 40;
+
+export const newView = (id: string, message: string, startedAt: number): BuildView => ({ id, status: 'running', message, reply: '', step: 0, parts: [], activity: [], seq: 0, startedAt });
+
+/** The line the builder is on now: the newest one still running. */
+export const currentActivity = (v: BuildView): Activity | undefined => [...v.activity].reverse().find((a) => a.state === 'running');
 
 /** Applies one event. Pure: the server keeps its view this way and the browser rebuilds the same one. */
 export function applyEvent(view: BuildView, e: BuildEvent | Numbered): BuildView {
@@ -81,12 +115,23 @@ export function applyEvent(view: BuildView, e: BuildEvent | Numbered): BuildView
     case 'thread':
       next.thread = e.token;
       break;
+    case 'blueprint':
+      next.parts = e.parts;
+      break;
+    case 'activity': {
+      const at = view.activity.findIndex((a) => a.id === e.activity.id);
+      next.activity = at >= 0 ? view.activity.map((a, i) => (i === at ? e.activity : a)) : [...view.activity, e.activity].slice(-ACTIVITY_KEEP);
+      break;
+    }
     case 'done':
       next.status = 'done';
+      next.activity = next.activity.map((a) => (a.state === 'running' ? { ...a, state: 'done' } : a));
       break;
     case 'error':
       next.status = 'error';
       next.error = e.message;
+      // Nothing is still going on once it has ended.
+      next.activity = next.activity.map((a) => (a.state === 'running' ? { ...a, state: 'failed' } : a));
       break;
     default:
       break;

@@ -103,3 +103,28 @@
     font-feature-settings: 'cv11', 'ss01';
   }
 }
+
+/* S5.3: a dot running down a connector while the agent is being tried. */
+@keyframes studio-flow {
+  from {
+    transform: translateY(-6px);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  to {
+    transform: translateY(18px);
+    opacity: 0;
+  }
+}
+.animate-flow {
+  animation: studio-flow 1.1s ease-in infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-flow {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
