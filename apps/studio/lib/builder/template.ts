@@ -76,18 +76,24 @@ const unique = (taken: Set<string>, base: string): string => {
 export const TOOLS_MARK = '\n\nTools you can use: ';
 export const CLOSING = 'Answer in plain, short sentences a non-technical person can follow. Never invent facts: if a tool failed or returned nothing, say so.';
 const CLOSING_MARK = `\n\n${CLOSING}`;
+/** Where the finding-other-agents rules start (S6). */
+export const NETWORK_MARK = '\n\nFinding other agents: ';
 
-/** The AI step's system message from the agent's instructions and one line per tool (`Name (what it is)`). */
-export function composeSystemMessage(instructions: string, toolLines: string[]): string {
+/**
+ * The AI step's system message from the agent's instructions and one line per tool (`Name (what it is)`).
+ * `networkText` (S6) is the rules for finding and hiring other agents; it starts with "Finding other agents: ".
+ */
+export function composeSystemMessage(instructions: string, toolLines: string[], networkText?: string): string {
   const lines = [instructions.trim()];
   if (toolLines.length) lines.push(`Tools you can use: ${toolLines.join('; ')}. Only use a tool when it helps with this request.`);
+  if (networkText) lines.push(networkText);
   lines.push(CLOSING);
   return lines.join('\n\n');
 }
 
 /** The person's own instructions out of a system message made by {@link composeSystemMessage}. */
 export function instructionsOf(message: string): string {
-  const cuts = [message.indexOf(TOOLS_MARK), message.indexOf(CLOSING_MARK)].filter((i) => i >= 0);
+  const cuts = [message.indexOf(TOOLS_MARK), message.indexOf(NETWORK_MARK), message.indexOf(CLOSING_MARK)].filter((i) => i >= 0);
   return (cuts.length ? message.slice(0, Math.min(...cuts)) : message).trim();
 }
 

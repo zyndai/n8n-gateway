@@ -6,6 +6,7 @@
 import type { DataSource } from '../env';
 import type { N8nNode, N8nWorkflow } from '../n8n/policy';
 import type { HelperCard } from '../registry';
+import { FIND_TOOL_NAME, HIRE_TOOL_NAME, RUNTIME_HIRE_MAX_USD, SEARCH_LIMIT, isFindStep, isHireStep, networkRules } from './network';
 import { NODE, composeSystemMessage, instructionsOf } from './template';
 
 export const TOOL_TYPES = {
@@ -39,6 +40,11 @@ export interface AgentEdit {
   remove?: string[];
   /** true adds the web reader, false removes it. */
   web?: boolean;
+  /**
+   * S6: the steps that let the agent find and hire other agents while it answers. They are added by default (an edit
+   * brings an older agent up to date); `false` takes them away.
+   */
+  network?: boolean;
 }
 
 export interface EditEnv {
@@ -46,6 +52,8 @@ export interface EditEnv {
   zyndCredential: { id: string; name: string };
   /** The most one helper or data-source call may cost, USD. */
   maxCallPriceUsd: string;
+  /** The agent's own entity id when it has one: the rules tell it never to hire itself. */
+  ownEntityId?: string;
 }
 
 export type EditPlan = { ok: true; operations: Record<string, unknown>[]; tools: ToolInfo[]; instructions: string } | { ok: false; error: string };
@@ -79,6 +87,7 @@ const param = (n: N8nNode, k: string): unknown => n.parameters?.[k];
 export function toolsOf(wf: N8nWorkflow): ToolInfo[] {
   const out: ToolInfo[] = [];
   for (const n of wf.nodes) {
+    if (isFindStep(n) || isHireStep(n)) continue; // the find-and-hire steps are the agent's own, not a tool the person picked
     // The how-to-call sentence Studio appends to a helper's description belongs to the tool, not to the system message.
     const described = typeof param(n, 'toolDescription') === 'string' ? line((param(n, 'toolDescription') as string).replace(/\s*Send a (?:JSON object|short plain-text request)[^.]*\.\s*$/, ''), 140) : '';
     const max = typeof param(n, 'maxPaymentUsd') === 'string' ? (param(n, 'maxPaymentUsd') as string) : undefined;
@@ -155,6 +164,49 @@ export function sourceNode(name: string, s: Pick<DataSource, 'listingUrl' | 'ope
   };
 }
 
+/** The step that searches the network. Free; the AI writes only the search words. */
+export function findNode(name: string, env: ToolNodeEnv, position: [number, number]): N8nNode {
+  return {
+    name,
+    type: TOOL_TYPES.helper,
+    typeVersion: 1,
+    position,
+    parameters: {
+      descriptionType: 'manual',
+      toolDescription: `Search the agent network for an agent that can do something your own tools cannot. Send a few plain words about what you need. Returns up to ${SEARCH_LIMIT} agents with their id (zns:…), name and what they do.`,
+      operation: 'searchAgents',
+      query: fromAi('query', 'A few plain words about the kind of agent you need'),
+      limit: SEARCH_LIMIT,
+    },
+    credentials: { zyndApi: { id: env.zyndCredential.id, name: env.zyndCredential.name } },
+  };
+}
+
+/**
+ * The step that hires an agent the AI picked. The id is the AI's; who pays (this agent's own wallet) and the most one
+ * hire may cost are fixed here. The policy accepts exactly this shape and nothing looser.
+ */
+export function hireNode(name: string, env: ToolNodeEnv, position: [number, number]): N8nNode {
+  return {
+    name,
+    type: TOOL_TYPES.helper,
+    typeVersion: 1,
+    position,
+    parameters: {
+      descriptionType: 'manual',
+      toolDescription: `Hire another agent found with "${FIND_TOOL_NAME}" and wait for its answer. Costs up to $${RUNTIME_HIRE_MAX_USD}. Send the agent's exact id and a short plain-text request.`,
+      operation: 'callAgent',
+      agentId: fromAi('agentId', 'The id of the agent to hire, copied exactly from the search results, it starts with zns:'),
+      inputType: 'text',
+      inputText: fromAi('request', 'What to ask the agent, in plain words'),
+      maxPaymentUsd: RUNTIME_HIRE_MAX_USD,
+      payFrom: 'listing',
+      payFromListingId: env.listingId,
+    },
+    credentials: { zyndApi: { id: env.zyndCredential.id, name: env.zyndCredential.name } },
+  };
+}
+
 /** The web reader: GET only, no key, a short answer. */
 export function webNode(name: string, position: [number, number]): N8nNode {
   return {
@@ -181,7 +233,7 @@ export const uniqueName = (taken: Set<string>, base: string): string => {
 export function planEdit(wf: N8nWorkflow, edit: AgentEdit, env: EditEnv): EditPlan {
   const ai = wf.nodes.find((n) => n.name === NODE.ai);
   if (!ai) return { ok: false, error: `The agent has no step named "${NODE.ai}", so it cannot be edited this way. Use update_workflow.` };
-  const asked = Boolean(edit.instructions?.trim()) || Boolean(edit.addHelpers?.length) || Boolean(edit.addSources?.length) || Boolean(edit.remove?.length) || edit.web !== undefined;
+  const asked = Boolean(edit.instructions?.trim()) || Boolean(edit.addHelpers?.length) || Boolean(edit.addSources?.length) || Boolean(edit.remove?.length) || edit.web !== undefined || edit.network !== undefined;
   if (!asked) return { ok: false, error: 'Nothing to change. Send new instructions, helpers or data sources to add, tools to remove, or web.' };
 
   const before = toolsOf(wf);
@@ -242,19 +294,47 @@ export function planEdit(wf: N8nWorkflow, edit: AgentEdit, env: EditEnv): EditPl
     added.push({ name, kind: 'web', what: 'Reads public web pages and open APIs that need no key.' });
   }
 
+  // S6: the find-and-hire steps. An edit brings an older agent up to date, so they are added unless the change says no.
+  const findStep = wf.nodes.find(isFindStep);
+  const hireStep = wf.nodes.find(isHireStep);
+  let network = edit.network !== false;
+  let networkChanged = false;
+  if (edit.network === false) {
+    for (const n of [findStep, hireStep]) {
+      if (!n) continue;
+      taken.delete(n.name);
+      operations.push({ type: 'removeNode', nodeName: n.name });
+      networkChanged = true;
+    }
+    network = false;
+  } else {
+    if (!findStep) {
+      const name = uniqueName(taken, FIND_TOOL_NAME);
+      operations.push({ type: 'addNode', node: findNode(name, env, place()) });
+      plug(name);
+      networkChanged = true;
+    }
+    if (!hireStep) {
+      const name = uniqueName(taken, HIRE_TOOL_NAME);
+      operations.push({ type: 'addNode', node: hireNode(name, env, place()) });
+      plug(name);
+      networkChanged = true;
+    }
+  }
+
   // The AI step's system message always matches the tools it really has, so it never promises one that is gone.
   let instructions = edit.instructions?.trim() ?? '';
   if (instructions.length > INSTRUCTIONS_MAX) return { ok: false, error: `The instructions are too long: ${INSTRUCTIONS_MAX} characters at most.` };
   const old = currentInstructions(wf);
   if (!instructions) {
     if (old === null) {
-      if (added.length || removed.size) return { ok: false, error: 'The agent\'s instructions are written as an expression, so Studio cannot update them to match the new tools. Send new "instructions" together with the change.' };
+      if (added.length || removed.size || networkChanged) return { ok: false, error: 'The agent\'s instructions are written as an expression, so Studio cannot update them to match the new tools. Send new "instructions" together with the change.' };
     } else instructions = old;
   }
   const tools = [...before.filter((t) => !removed.has(t.name)), ...added];
   if (instructions) {
     const options = isObj(param(ai, 'options')) ? (param(ai, 'options') as Record<string, unknown>) : {};
-    operations.push({ type: 'setNodeParameter', nodeName: NODE.ai, path: '/options', value: { ...options, systemMessage: composeSystemMessage(instructions, tools.map(toolLine)) } });
+    operations.push({ type: 'setNodeParameter', nodeName: NODE.ai, path: '/options', value: { ...options, systemMessage: composeSystemMessage(instructions, tools.map(toolLine), network ? networkRules(env.ownEntityId) : undefined) } });
   }
   return { ok: true, operations, tools, instructions: instructions || (old ?? '') };
 }

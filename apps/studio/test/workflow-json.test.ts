@@ -21,7 +21,7 @@ describe('renderWorkflowJson (S5.1)', () => {
   it('writes a finished agent the guard accepts as it is, with every credential set', () => {
     const { workflow } = renderWorkflowJson(full, env());
     expect(checkWorkflow(workflow, ctx)).toEqual({ blocked: [], missing: [] });
-    expect(workflow.settings).toEqual({ executionOrder: 'v1', availableInMCP: true });
+    expect(workflow.settings).toEqual({ executionOrder: 'v1', availableInMCP: true, saveExecutionProgress: true });
     expect(workflow.name).toBe('Supplier Check · 11111111');
   });
   it('also passes with no tools at all', () => {

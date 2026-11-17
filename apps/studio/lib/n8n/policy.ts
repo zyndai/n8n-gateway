@@ -1,6 +1,7 @@
 // The guard rail on what a Studio agent's workflow may contain (plan, "Guard rails"). The n8n MCP token can change
 // anything on the instance, so after every create or update Studio reads the workflow back and runs this check, and
 // it runs again right before the workflow is executed or published. Pure functions: no network, easy to test.
+import { RUNTIME_HIRE_MAX_USD, SEARCH_LIMIT_MAX, isRuntimeAgentExpr } from '../builder/network';
 import { NODE } from '../builder/template';
 import type { DataSource } from '../env';
 
@@ -49,6 +50,8 @@ export interface PolicyContext {
   dataSources: DataSource[];
   /** The most one helper or data-source call may cost, USD. */
   maxCallPriceUsd: string;
+  /** This agent's own entity id once it has one: told to the agent so it never hires itself. */
+  ownEntityId?: string;
 }
 
 export interface PolicyResult {
@@ -148,6 +151,8 @@ export function checkWorkflow(wf: N8nWorkflow, ctx: PolicyContext): PolicyResult
   const blocked: string[] = [];
   const missing: string[] = [];
   const nodes = Array.isArray(wf.nodes) ? wf.nodes : [];
+  let searchSteps = 0;
+  let hireSteps = 0;
 
   if (nodes.length > MAX_NODES) blocked.push(`The agent has ${nodes.length} steps; at most ${MAX_NODES} are allowed.`);
   if (wf.settings?.errorWorkflow) blocked.push('Remove the error workflow setting: agents may not trigger other workflows.');
@@ -184,9 +189,32 @@ export function checkWorkflow(wf: N8nWorkflow, ctx: PolicyContext): PolicyResult
         if (param(n, 'public') === true) blocked.push(`${label} must not be public: anyone with the link could spend this agent's credit.`);
         break;
       case T.zyndTool: {
-        if (param(n, 'operation') !== 'callAgent') blocked.push(`${label} may only use operation "callAgent".`);
+        const op = param(n, 'operation');
+        if (op === 'searchAgents') {
+          // S6: looking for agents costs nothing. The search words are the AI's; how many results come back is fixed.
+          const limit = param(n, 'limit');
+          if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > SEARCH_LIMIT_MAX) blocked.push(`${label} must return a fixed number of results, 1 to ${SEARCH_LIMIT_MAX} (limit).`);
+          const category = param(n, 'category');
+          if (category !== undefined && category !== '' && !isLiteral(category)) blocked.push(`${label} must not choose its category with an expression.`);
+          searchSteps += 1;
+          break;
+        }
+        if (op !== 'callAgent') {
+          blocked.push(`${label} may only use operation "callAgent" or "searchAgents".`);
+          break;
+        }
         const agentId = param(n, 'agentId');
-        if (!isLiteral(agentId) || !ENTITY_ID.test(agentId)) blocked.push(`${label} must hire one fixed helper: set agentId to its "zns:…" id, not an expression.`);
+        if (isRuntimeAgentExpr(agentId)) {
+          // S6: the one step where the AI picks the agent. Who pays and the ceiling are fixed, and there may be only one.
+          hireSteps += 1;
+          const max = param(n, 'maxPaymentUsd');
+          if (isLiteral(max) && USD.test(max) && Number(max) > Math.min(Number(RUNTIME_HIRE_MAX_USD), Number(ctx.maxCallPriceUsd))) {
+            blocked.push(`${label} may cost at most $${RUNTIME_HIRE_MAX_USD} per hire; maxPaymentUsd is ${max}.`);
+          }
+          if (param(n, 'inputType') !== 'text') blocked.push(`${label} must send plain text (inputType "text").`);
+        } else if (!isLiteral(agentId) || !ENTITY_ID.test(agentId)) {
+          blocked.push(`${label} must hire one fixed helper: set agentId to its "zns:…" id, not an expression.`);
+        }
         checkPayment(n, label, ctx, blocked);
         break;
       }
@@ -233,6 +261,9 @@ export function checkWorkflow(wf: N8nWorkflow, ctx: PolicyContext): PolicyResult
       }
     }
   }
+
+  if (searchSteps > 1) blocked.push('Only one step that searches for agents is allowed.');
+  if (hireSteps > 1) blocked.push('Only one step that hires an agent of its own choosing is allowed.');
 
   // The finished shape (plan, "Agent workflow template").
   const named = (name: string, type?: string) => nodes.find((n) => n.name === name && (type === undefined || n.type === type));

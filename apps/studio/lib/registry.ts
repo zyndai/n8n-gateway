@@ -35,6 +35,7 @@ interface SearchHit {
 
 const CACHE_TTL_MS = 10 * 60_000;
 const CACHE_MAX = 500;
+const MISS_TTL_MS = 60_000;
 const CARD_MAX_BYTES = 200_000;
 
 /**
@@ -72,6 +73,8 @@ export function cardUrl(entityUrl: unknown): URL | null {
 
 export class Registry {
   private readonly cache = new Map<string, { at: number; card: HelperCard }>();
+  /** Agents whose card could not be read, remembered briefly so a live view does not ask again every second. */
+  private readonly misses = new Map<string, number>();
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
 
@@ -113,6 +116,20 @@ export class Registry {
     const cards = await Promise.all(hits.slice(0, 10).map((h) => this.card(h)));
     const max = Number(this.cfg.maxCallPriceUsd);
     return cards.filter((c): c is HelperCard => c !== null && Number(c.priceUsd) <= max).slice(0, limit);
+  }
+
+  /** The card of one agent a search turned up (S6), with its price, or null when it cannot be read. Cached. */
+  async cardFromHit(h: { entityId: string; name: string; what: string; url: string }): Promise<HelperCard | null> {
+    const hit = this.lookup(h.entityId);
+    if (hit) return hit;
+    const missed = this.misses.get(h.entityId);
+    if (missed !== undefined && this.now() - missed < MISS_TTL_MS) return null;
+    const card = await this.card({ entity_id: h.entityId, name: h.name, summary: h.what, url: h.url, status: 'active' });
+    if (!card) {
+      if (this.misses.size >= CACHE_MAX) this.misses.delete(this.misses.keys().next().value as string);
+      this.misses.set(h.entityId, this.now());
+    }
+    return card;
   }
 
   private async card(h: SearchHit): Promise<HelperCard | null> {

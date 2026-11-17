@@ -2,13 +2,13 @@
 
 import { ActivityList } from '@/components/activity-list';
 import { Builder } from '@/components/builder';
-import { ChatPanel } from '@/components/chat-panel';
+import { ChatWorkspace, type NetworkStart } from '@/components/chat-workspace';
 import { SettingsPanel } from '@/components/settings-panel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { copy } from '@/lib/copy';
 import type { ActivityItem, Agent, BuilderMode } from '@/lib/types';
 
-export function AgentTabs({ agent, activity, mode }: { agent: Agent; activity: ActivityItem[] | null; mode: BuilderMode }) {
+export function AgentTabs({ agent, activity, mode, network }: { agent: Agent; activity: ActivityItem[] | null; mode: BuilderMode; network: NetworkStart | null }) {
   const t = copy.agent.tabs;
   // Changes are made by chat, on an agent that has been built. In preview every agent can be changed.
   const canEdit = mode === 'preview' || (mode === 'live' && agent.hasWorkflow);
@@ -21,7 +21,7 @@ export function AgentTabs({ agent, activity, mode }: { agent: Agent; activity: A
         <TabsTrigger value="settings">{t.settings}</TabsTrigger>
       </TabsList>
       <TabsContent value="chat">
-        <ChatPanel agentId={agent.id} mode={mode} built={agent.hasWorkflow} />
+        <ChatWorkspace agentId={agent.id} agentName={agent.name} mode={mode} built={agent.hasWorkflow} creditUsd={agent.creditUsd} network={network} />
       </TabsContent>
       {canEdit ? (
         <TabsContent value="edit">

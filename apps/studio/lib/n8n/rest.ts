@@ -93,3 +93,18 @@ export function restWorkflowWriter(cfg: N8nRestConfig, fetchImpl: typeof fetch =
     },
   };
 }
+
+/** Reads one run of a workflow, finished or still going. Studio keeps only what the picture needs (`progress.ts`). */
+export interface ExecutionReader {
+  get(id: string): Promise<unknown>;
+}
+
+/** GET /api/v1/executions/{id}?includeData=true. The reply holds everything about the run, so it never leaves the server. */
+export function restExecutionReader(cfg: N8nRestConfig, fetchImpl: typeof fetch = fetch): ExecutionReader {
+  return {
+    async get(id) {
+      if (!/^\d{1,12}$/.test(id)) throw new N8nError('Not a run id', 400);
+      return call(cfg, 'GET', `/executions/${id}?includeData=true`, undefined, fetchImpl, 15_000);
+    },
+  };
+}

@@ -2,6 +2,7 @@
 // organisation id and a resume token, so nothing here ever returns it: only the answer, the helpers used (with what
 // each cost) and a plain error class are picked out (S0.5 b).
 import { NODE } from '../builder/template';
+import type { NetCall } from '../network';
 
 export type RunStatus = 'running' | 'success' | 'error' | 'canceled';
 
@@ -26,6 +27,8 @@ export interface RunView {
   errorKind?: RunErrorKind;
   /** The workflow reported it ran through the Answer step. */
   reachedAnswer: boolean;
+  /** S6: every use of the agent's steps so far, oldest first (searches, hires, helpers). */
+  calls?: NetCall[];
   startedAt?: string;
 }
 

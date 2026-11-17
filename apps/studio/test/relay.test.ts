@@ -268,7 +268,7 @@ describe('WorkflowRelay', () => {
       expect(tools.map((t) => t.name)).toEqual(['Counterparty Check', 'Briefpixel news']);
       const call = mcp.callsTo('update_workflow').at(-1)?.args as { workflowId: string; operations: { type: string }[] };
       expect(call.workflowId).toBe('wf-1');
-      expect(call.operations.map((o) => o.type)).toEqual(['removeNode', 'setNodeParameter']);
+      expect(call.operations.map((o) => o.type)).toEqual(['removeNode', 'addNode', 'addConnection', 'addNode', 'addConnection', 'setNodeParameter']);
     });
     it('refuses, with the reason, an edit the planner cannot make; nothing is sent to n8n', async () => {
       withWorkflow();

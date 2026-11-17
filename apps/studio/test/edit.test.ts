@@ -104,7 +104,8 @@ describe('planEdit: changing and removing', () => {
     expect(message).not.toContain('You check suppliers.');
     expect(message).toContain('Counterparty Check (a helper agent:');
     expect(verdict).toEqual({ blocked: [], missing: [] });
-    expect(after.nodes).toHaveLength(goodWorkflow().nodes.length);
+    // An edit brings an older agent up to date: it gains the two steps that find and hire agents (S6).
+    expect(after.nodes).toHaveLength(goodWorkflow().nodes.length + 2);
   });
 
   it('removes a tool, and the system message stops promising it', () => {

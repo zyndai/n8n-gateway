@@ -1,3 +1,5 @@
+import type { SavedCall } from './network';
+
 export type AgentStatus = 'draft' | 'live' | 'paused';
 
 export interface Helper {
@@ -33,6 +35,8 @@ export interface ChatTurn {
   used?: { helpers: number; costUsd: string };
   /** Technical lines behind the Details toggle. */
   details?: string[];
+  /** S6: what this answer used on the network, kept so the picture can be drawn again after a reload. */
+  net?: SavedCall[];
 }
 
 export interface ActivityItem {

@@ -144,6 +144,40 @@ export const copy = {
 
   // Plain words and a next step for every error the user can meet (S4.2 uses these everywhere).
   /** S5.3: the agent taking shape, and what the builder is doing, as the person reads it. */
+  /** S6: the live picture of what an agent does while it answers. */
+  network: {
+    title: 'Your agent\u2019s network',
+    you: 'Your agent',
+    creditLeft: 'credit left',
+    idle: 'Ready. Ask a question and watch your agent get to work.',
+    thinking: 'Thinking it through\u2026',
+    searching: (query: string) => `Looking for help: \u201c${query}\u201d`,
+    searchingPlain: 'Looking for someone who can help\u2026',
+    found: (count: string) => `Found ${count} that could help`,
+    foundNone: 'Found nobody suitable',
+    talking: (name: string) => `Asking ${name}\u2026`,
+    paid: (name: string, amount: string) => `Paid ${name} ${amount}`,
+    paidNothing: (name: string) => `${name} answered`,
+    failed: (name: string) => `${name} did not answer`,
+    done: 'Answer ready',
+    perUse: (amount: string) => `${amount} per use`,
+    freeToAsk: 'price not shown',
+    paidTotal: (amount: string) => `paid ${amount}`,
+    uses: (n: string) => `${n} ${n === '1' ? 'time' : 'times'}`,
+    spent: 'Paid in this chat',
+    agentsMet: 'Helpers used',
+    empty: 'Helpers your agent finds and pays will appear here.',
+    show: 'Show the network',
+    hide: 'Hide the network',
+    candidate: 'Could help',
+    yourTools: 'Its own helpers',
+    log: 'What happened',
+    ownHelper: 'Helper',
+    dataSource: 'Data',
+    webReader: 'Web',
+    foundAgent: 'Found on the network',
+  },
+
   build: {
     parts: {
       network: 'Other agents hire it',

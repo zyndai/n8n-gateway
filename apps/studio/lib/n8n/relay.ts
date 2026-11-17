@@ -9,7 +9,9 @@
 import { planEdit, currentInstructions, toolsOf, type AgentEdit, type ToolInfo } from '../builder/edit';
 import { NODE } from '../builder/template';
 import { keepIds, renderWorkflowJson, type AgentSpec, type RenderedTool } from '../builder/workflow-json';
-import type { WorkflowWriter } from './rest';
+import { isFindStep } from '../builder/network';
+import { parseCalls, normaliseRestExecution } from './progress';
+import type { ExecutionReader, WorkflowWriter } from './rest';
 import { checkWorkflow, credentialFixes, type N8nNode, type N8nWorkflow, type PolicyContext, type PolicyResult } from './policy';
 import { parseExecution, parseRequest, toolKey, type RunView } from './runs';
 
@@ -72,6 +74,8 @@ export class WorkflowRelay {
     private readonly ctx: PolicyContext,
     /** Where Studio writes whole workflows (n8n's REST API). Without it, `saveAgent` refuses. */
     private readonly writer?: WorkflowWriter,
+    /** Where a run is read while it is still going (n8n's REST API). Without it, runs are read through MCP, after they end. */
+    private readonly executions?: ExecutionReader,
   ) {}
 
   get workflowId(): string | null {
@@ -181,6 +185,7 @@ export class WorkflowRelay {
       model: this.ctx.agentModel,
       zyndCredential: { id: this.ctx.zyndCredentialId, name: this.ctx.zyndCredentialName ?? this.ctx.zyndCredentialId },
       openAiCredential: { id: this.ctx.openAiCredentialId, name: this.ctx.openAiCredentialName ?? this.ctx.openAiCredentialId },
+      ...(this.ctx.ownEntityId ? { ownEntityId: this.ctx.ownEntityId } : {}),
     });
     const before = checkWorkflow(workflow, this.ctx);
     if (before.blocked.length > 0) throw new RelayRefusal('That agent would contain something that is not allowed, so it was not saved.', before.blocked);
@@ -238,9 +243,30 @@ export class WorkflowRelay {
       listingId: this.ctx.listingId,
       zyndCredential: { id: this.ctx.zyndCredentialId, name: zyndCredentialName },
       maxCallPriceUsd: this.ctx.maxCallPriceUsd,
+      ...(this.ctx.ownEntityId ? { ownEntityId: this.ctx.ownEntityId } : {}),
     });
     if (!plan.ok) throw new RelayRefusal(plan.error);
-    return { result: await this.update({ operations: plan.operations, versionName: 'Changed by chat' }), tools: plan.tools };
+    const result = await this.update({ operations: plan.operations, versionName: 'Changed by chat' });
+    await this.ensureProgress();
+    return { result, tools: plan.tools };
+  }
+
+  /**
+   * An agent built before S6 does not save its progress, so the app could not follow its runs live. The next change
+   * brings it up to date. Best effort: a failure here never fails the change itself.
+   */
+  private async ensureProgress(): Promise<void> {
+    if (!this.writer) return;
+    try {
+      const id = this.own();
+      const wf = await this.details(id);
+      if (wf.settings?.saveExecutionProgress === true) return;
+      const settings: Record<string, unknown> = { executionOrder: 'v1', availableInMCP: true, saveExecutionProgress: true };
+      for (const k of ['executionTimeout', 'timezone', 'saveManualExecutions', 'saveDataErrorExecution', 'saveDataSuccessExecution']) if (wf.settings?.[k] !== undefined) settings[k] = wf.settings[k];
+      await this.writer.replace(id, { name: typeof wf.name === 'string' && wf.name ? wf.name : this.bind.workflowName(), nodes: wf.nodes, connections: wf.connections ?? {}, settings });
+    } catch {
+      /* the run view then shows everything when the answer arrives, as before */
+    }
   }
 
   /**
@@ -267,16 +293,27 @@ export class WorkflowRelay {
     return id;
   }
 
-  /** One run of this agent, as the UI may show it. */
+  /** One run of this agent, as the UI may show it: the answer and what it cost, and (S6) what it did on the network so far. */
   async readRun(executionId: string): Promise<RunView & { request?: string }> {
     const workflowId = this.own();
+    if (this.executions) {
+      const run = normaliseRestExecution(await this.executions.get(executionId));
+      if (run.execution.workflowId !== workflowId) throw new RelayRefusal('That run belongs to another agent.');
+      const nodes = run.nodes.length ? run.nodes : (await this.details()).nodes;
+      return this.viewOf({ execution: run.execution, data: run.data }, nodes);
+    }
     const raw = await this.mcp.callTool('get_workflow_execution', { workflowId, executionId, includeData: true, nodeNames: [NODE.request, NODE.ai, NODE.answer] });
     const execution = isObj(raw) && isObj(raw.execution) ? raw.execution : {};
     if (execution.workflowId !== undefined && String(execution.workflowId) !== workflowId) throw new RelayRefusal('That run belongs to another agent.');
-    const wf = await this.details();
-    const paid = new Set(wf.nodes.filter((n) => n.type === 'CUSTOM.zyndTool' || n.type === 'CUSTOM.zyndAirnodeTool').map((n) => toolKey(n.name)));
+    return this.viewOf(raw, (await this.details()).nodes);
+  }
+
+  private viewOf(raw: unknown, nodes: N8nNode[]): RunView & { request?: string } {
+    // The search step is free and its results are not a helper: only steps that pay count as one that did not answer.
+    const paid = new Set(nodes.filter((n) => (n.type === 'CUSTOM.zyndTool' && !isFindStep(n)) || n.type === 'CUSTOM.zyndAirnodeTool').map((n) => toolKey(n.name)));
     const request = parseRequest(raw);
-    return { ...parseExecution(raw, paid), ...(request ? { request } : {}) };
+    const data = isObj(raw) && isObj(raw.data) && isObj(raw.data.resultData) ? raw.data.resultData.runData : undefined;
+    return { ...parseExecution(raw, paid), calls: parseCalls(data, nodes), ...(request ? { request } : {}) };
   }
 
   /** The agent's chat runs, newest first (id, status, start time). In-app runs only: the Zynd Trigger's are tasks at the Gateway. */

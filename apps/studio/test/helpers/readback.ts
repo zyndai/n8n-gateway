@@ -81,7 +81,7 @@ export const baseConnections = (): NonNullable<N8nWorkflow['connections']> => ({
 export function goodWorkflow(change: (nodes: N8nNode[]) => N8nNode[] | void = () => undefined): N8nWorkflow {
   const nodes = baseNodes();
   const out = change(nodes) ?? nodes;
-  return { id: 'wf-1', name: 'Supplier Check', nodes: out, connections: baseConnections(), settings: { executionOrder: 'v1', availableInMCP: true } };
+  return { id: 'wf-1', name: 'Supplier Check', nodes: out, connections: baseConnections(), settings: { executionOrder: 'v1', availableInMCP: true, saveExecutionProgress: true } };
 }
 
 export const nodeNamed = (nodes: N8nNode[], name: string): N8nNode => nodes.find((n) => n.name === name) as N8nNode;

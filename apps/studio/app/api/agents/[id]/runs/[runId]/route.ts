@@ -15,6 +15,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string;
       ...(run.answer ? { answer: run.answer } : {}),
       helpers: run.helpers,
       costUsd: run.costUsd,
+      calls: run.calls ?? [],
       ...(run.errorKind ? { errorKind: run.errorKind } : {}),
     });
   } catch (err) {

@@ -7,12 +7,13 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { apiMessage, copy } from '@/lib/copy';
 import { formatUsd } from '@/lib/format';
-import { SAMPLE_CHAT } from '@/lib/sample';
+import { saveCalls, type NetCall, type SavedCall } from '@/lib/network';
+import { SAMPLE_CHAT, SAMPLE_RUN } from '@/lib/sample';
 import { useStoredText } from '@/lib/use-stored';
 import type { ChatTurn, BuilderMode } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
-const POLL_MS = 1500;
+const POLL_MS = 1000;
 const GIVE_UP_MS = 300_000;
 const storeKey = (id: string) => `studio.chat.${id}`;
 
@@ -23,7 +24,11 @@ interface RunReply {
   costUsd?: string;
   errorKind?: string;
   error?: string;
+  calls?: NetCall[];
 }
+
+/** What the chat tells the picture of the agent's network as a run goes on (S6). */
+export type RunEvent = { type: 'start' } | { type: 'calls'; calls: NetCall[] } | { type: 'end'; saved: SavedCall[] };
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -31,19 +36,24 @@ function parseTurns(raw: string | null | undefined): ChatTurn[] {
   if (!raw) return [];
   try {
     const v = JSON.parse(raw) as unknown;
-    return Array.isArray(v) ? (v as ChatTurn[]).filter((t) => (t.role === 'user' || t.role === 'agent') && typeof t.text === 'string').slice(-30) : [];
+    return Array.isArray(v)
+      ? (v as ChatTurn[])
+          .filter((t) => (t.role === 'user' || t.role === 'agent') && typeof t.text === 'string')
+          .map((t) => ({ ...t, net: Array.isArray(t.net) ? t.net.filter((c) => c && typeof c.kind === 'string' && typeof c.tool === 'string').slice(0, 12) : undefined }))
+          .slice(-30)
+      : [];
   } catch {
     return [];
   }
 }
 
-export function ChatPanel(props: { agentId: string; mode: BuilderMode; built: boolean }) {
+export function ChatPanel(props: { agentId: string; mode: BuilderMode; built: boolean; onRun?: (e: RunEvent) => void; onTurns?: (turns: ChatTurn[]) => void }) {
   const raw = useStoredText(props.mode === 'live' && props.built ? storeKey(props.agentId) : null);
   if (raw === undefined) return <div className="h-[min(34rem,calc(100vh-17rem))] min-h-[24rem] animate-pulse rounded-xl border bg-card" aria-hidden />;
   return <ChatView {...props} saved={parseTurns(raw)} />;
 }
 
-function ChatView({ agentId, mode, built, saved }: { agentId: string; mode: BuilderMode; built: boolean; saved: ChatTurn[] }) {
+function ChatView({ agentId, mode, built, saved, onRun, onTurns }: { agentId: string; mode: BuilderMode; built: boolean; saved: ChatTurn[]; onRun?: (e: RunEvent) => void; onTurns?: (turns: ChatTurn[]) => void }) {
   const demo = mode === 'preview';
   const live = mode === 'live' && built;
   const [turns, setTurns] = useState<ChatTurn[]>(demo ? SAMPLE_CHAT.slice(0, 2) : saved);
@@ -69,42 +79,72 @@ function ChatView({ agentId, mode, built, saved }: { agentId: string; mode: Buil
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
   }, [turns, busy]);
+  useEffect(() => {
+    onTurns?.(turns);
+  }, [onTurns, turns]);
 
   const add = (t: ChatTurn) => alive.current && setTurns((prev) => [...prev, t]);
 
   async function sendDemo() {
-    await wait(1400);
-    add(SAMPLE_CHAT[1] as ChatTurn);
+    onRun?.({ type: 'start' });
+    const t0 = Date.now();
+    for (const frame of SAMPLE_RUN) {
+      await wait(Math.max(0, frame.at - (Date.now() - t0)));
+      if (!alive.current) return;
+      onRun?.({ type: 'calls', calls: frame.calls });
+    }
+    await wait(900);
+    const reply = SAMPLE_CHAT[1] as ChatTurn;
+    add(reply);
+    onRun?.({ type: 'end', saved: reply.net ?? [] });
   }
 
   async function sendLive(text: string, history: ChatTurn[]) {
-    const start = await fetch(`/api/agents/${encodeURIComponent(agentId)}/runs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, history: history.slice(-6).map((t) => ({ role: t.role, text: t.text })) }),
-    });
-    const started = (await start.json().catch(() => ({}))) as { runId?: string; error?: string };
-    if (!start.ok || !started.runId) return add({ role: 'agent', text: apiMessage(started.error) });
+    onRun?.({ type: 'start' });
+    let ended = false;
+    const end = (saved: SavedCall[]) => {
+      if (ended) return;
+      ended = true;
+      onRun?.({ type: 'end', saved });
+    };
+    try {
+      const start = await fetch(`/api/agents/${encodeURIComponent(agentId)}/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, history: history.slice(-6).map((t) => ({ role: t.role, text: t.text })) }),
+      });
+      const started = (await start.json().catch(() => ({}))) as { runId?: string; error?: string };
+      if (!start.ok || !started.runId) return add({ role: 'agent', text: apiMessage(started.error) });
 
-    const until = Date.now() + GIVE_UP_MS;
-    while (alive.current && Date.now() < until) {
-      await wait(POLL_MS);
-      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(started.runId)}`, { cache: 'no-store' });
-      const run = (await res.json().catch(() => ({}))) as RunReply;
-      if (!res.ok) return add({ role: 'agent', text: apiMessage(run.error) });
-      if (run.status === 'running') continue;
-      if (run.status === 'success' && run.answer) {
-        const helpers = run.helpers ?? [];
-        return add({
-          role: 'agent',
-          text: run.answer,
-          used: { helpers: helpers.length, costUsd: run.costUsd ?? '0' },
-          details: helpers.map((h) => `${h.name} · ${h.ok ? formatUsd(h.costUsd) : 'did not answer'}`),
-        });
+      const until = Date.now() + GIVE_UP_MS;
+      while (alive.current && Date.now() < until) {
+        await wait(POLL_MS);
+        const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(started.runId)}`, { cache: 'no-store' });
+        const run = (await res.json().catch(() => ({}))) as RunReply;
+        if (!res.ok) return add({ role: 'agent', text: apiMessage(run.error) });
+        if (run.calls?.length) onRun?.({ type: 'calls', calls: run.calls });
+        if (run.status === 'running') continue;
+        if (run.status === 'success' && run.answer) {
+          const helpers = run.helpers ?? [];
+          const used = (run.calls ?? []).filter((c) => c.kind !== 'search' && c.state !== 'calling');
+          const saved = saveCalls(run.calls ?? []);
+          add({
+            role: 'agent',
+            text: run.answer,
+            used: { helpers: helpers.length, costUsd: run.costUsd ?? '0' },
+            details: used.length
+              ? used.map((c) => `${c.name ?? c.tool} · ${c.state === 'done' ? formatUsd(c.paidUsd ?? '0') : 'did not answer'}${c.kind === 'hire' ? ' · found on the network' : ''}`)
+              : helpers.map((h) => `${h.name} · ${h.ok ? formatUsd(h.costUsd) : 'did not answer'}`),
+            net: saved,
+          });
+          return end(saved);
+        }
+        return add({ role: 'agent', text: apiMessage(undefined, run.errorKind) });
       }
-      return add({ role: 'agent', text: apiMessage(undefined, run.errorKind) });
+      if (alive.current) add({ role: 'agent', text: apiMessage(undefined, 'timeout') });
+    } finally {
+      end([]);
     }
-    if (alive.current) add({ role: 'agent', text: apiMessage(undefined, 'timeout') });
   }
 
   async function send() {

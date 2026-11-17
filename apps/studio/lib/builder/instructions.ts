@@ -36,6 +36,7 @@ If the agent is live, Studio puts a tested change live by itself a moment after 
 - The agent's instructions say exactly what it does, what it needs in the request, and how the answer should look. They are written to the agent, in plain English, under 1500 characters. Say which helper to use for what, by its name.
 - Never tell the agent to read a field called "caller": it only gets the request text.
 - Each helper is hired by its fixed id, pays from the agent's own wallet and has a maximum price. Studio sets these; you cannot change them.
+- Every agent can also look for other agents on the network by itself while it answers, and hire one for a part of a request that none of its own tools can do (at most three, never over $0.25 each). Studio adds this to every agent: you do not choose it, and you do not need it to be mentioned in the instructions.
 - A summary or description is 200 characters or fewer.
 
 # Safety

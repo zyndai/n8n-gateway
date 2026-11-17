@@ -7,7 +7,9 @@ import type { DataSource } from '../env';
 import type { PolicyContext } from '../n8n/policy';
 import { McpError } from '../n8n/mcp';
 import { RelayRefusal, WorkflowRelay, type McpLike } from '../n8n/relay';
-import type { WorkflowWriter } from '../n8n/rest';
+import type { ExecutionReader, WorkflowWriter } from '../n8n/rest';
+import { toolViews, type FoundAgent, type NetCall, type ToolView } from '../network';
+import type { HelperCard } from '../registry';
 import type { RunView } from '../n8n/runs';
 import type { ActivityItem } from '../types';
 import type { StudioSession } from '../session-cookie';
@@ -41,6 +43,10 @@ export interface AgentServiceDeps {
   mcp: McpLike;
   /** Where whole workflows are written (n8n's REST API). */
   workflows?: WorkflowWriter;
+  /** Where a run is read while it is still going (n8n's REST API). */
+  executions?: ExecutionReader;
+  /** Prices of agents a search turned up (S6). Without it the graph shows them without a price. */
+  registry?: { lookup(entityId: string): HelperCard | undefined; cardFromHit(h: { entityId: string; name: string; what: string; url: string }): Promise<HelperCard | null> };
   /** The id of a credential in n8n by exact name and type. */
   findCredentialId(type: string, name: string): Promise<string | undefined>;
   treasury: Treasury | null;
@@ -160,7 +166,7 @@ export class AgentService {
       },
       workflowName: () => `${listing.name} · ${listing.id.slice(0, 8)}`,
     };
-    return new WorkflowRelay(this.deps.mcp, binding, ctx, this.deps.workflows);
+    return new WorkflowRelay(this.deps.mcp, binding, ctx, this.deps.workflows, this.deps.executions);
   }
 
   async policyContextFor(listing: ListingView): Promise<PolicyContext> {
@@ -177,6 +183,7 @@ export class AgentService {
       agentModel: this.deps.agentModel,
       dataSources: this.deps.dataSources,
       maxCallPriceUsd: this.deps.maxCallPriceUsd,
+      ...(listing.entityId ? { ownEntityId: listing.entityId } : {}),
     };
   }
 
@@ -215,7 +222,53 @@ export class AgentService {
     if (!/^\d{1,12}$/.test(executionId)) throw new AgentError('bad-input', 'Not a run id');
     const listing = await this.load(id);
     if (!listing.workflowId) throw new AgentError('no-workflow', 'This agent has not been built yet');
-    return this.relayOrThrow(listing, (r) => r.readRun(executionId));
+    const run = await this.relayOrThrow(listing, (r) => r.readRun(executionId));
+    return { ...run, calls: await this.priceCalls(run.calls ?? []) };
+  }
+
+  /**
+   * Prices and names for the agents a run found or hired (S6). Agents come from search results written by other
+   * people, so only what Studio read from their public card is added, and the card address never leaves the server.
+   */
+  private async priceCalls(calls: NetCall[]): Promise<NetCall[]> {
+    const reg = this.deps.registry;
+    const known = new Map<string, FoundAgent>();
+    for (const c of calls) for (const f of c.found ?? []) known.set(f.entityId, { ...f });
+    if (reg) {
+      await Promise.all(
+        [...known.values()].slice(0, 12).map(async (f) => {
+          const card = reg.lookup(f.entityId) ?? (f.url ? await reg.cardFromHit({ entityId: f.entityId, name: f.name, what: f.what, url: f.url }).catch(() => null) : null);
+          if (card) {
+            f.priceUsd = card.priceUsd;
+            if (card.name) f.name = card.name;
+          }
+        }),
+      );
+    }
+    return calls.map((c): NetCall => {
+      const { found, ...rest } = c;
+      const out: NetCall = { ...rest };
+      if (found) out.found = found.map((f) => ({ entityId: f.entityId, name: known.get(f.entityId)?.name ?? f.name, what: f.what, ...(known.get(f.entityId)?.priceUsd ? { priceUsd: known.get(f.entityId)?.priceUsd as string } : {}) }));
+      if (c.kind === 'hire' && c.agentId) {
+        const k = known.get(c.agentId);
+        const card = reg?.lookup(c.agentId);
+        const name = k?.name ?? card?.name;
+        const price = k?.priceUsd ?? card?.priceUsd;
+        if (name) out.name = name;
+        if (price) out.priceUsd = price;
+      }
+      return out;
+    });
+  }
+
+  /** What the picture of the agent's network starts from: its credit and its own tools with their prices. */
+  async network(id: string): Promise<{ creditUsd: string | null; tools: ToolView[] }> {
+    const listing = await this.load(id);
+    const [creditUsd, setup] = await Promise.all([
+      this.walletBalance(id),
+      listing.workflowId ? this.relayOrThrow(listing, (r) => r.setup()).catch(() => null) : Promise.resolve(null),
+    ]);
+    return { creditUsd, tools: setup ? toolViews(setup.tools) : [] };
   }
 
   private async relayOrThrow<T>(listing: ListingView, f: (r: WorkflowRelay) => Promise<T>): Promise<T> {

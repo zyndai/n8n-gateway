@@ -2,6 +2,7 @@
 import type { ActivityItem, Agent, ChatTurn, Helper } from './types';
 import type { Activity, BuildEvent, Part, PartState } from './builder/events';
 import { copy } from './copy';
+import type { NetCall, ToolView } from './network';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 
@@ -49,14 +50,45 @@ export const SAMPLE_AGENTS: Agent[] = [
   },
 ];
 
+export const SAMPLE_AGENT_A = 'zns:sample000000000000000000000001';
+export const SAMPLE_AGENT_B = 'zns:sample000000000000000000000002';
+
+/** What the sample agent can use on its own, for the picture of its network (S6). */
+export const SAMPLE_NET_TOOLS: ToolView[] = [
+  { name: 'Wallet Risk Screener', kind: 'helper', priceUsd: '0.03', what: 'Screens a payment address for risk' },
+  { name: 'Web page reader', kind: 'web', what: 'Reads public web pages' },
+];
+
+const found = [
+  { entityId: SAMPLE_AGENT_A, name: 'Companies House Lookup', what: 'Confirms a UK company and its status', priceUsd: '0.02' },
+  { entityId: SAMPLE_AGENT_B, name: 'Registry Watch', what: 'Tracks filings for a company', priceUsd: '0.04' },
+];
+const search: NetCall = { id: 'Find agents#0', kind: 'search', tool: 'Find agents', state: 'calling', query: 'UK company registry' };
+const hire: NetCall = { id: 'Hire an agent#0', kind: 'hire', tool: 'Hire an agent', state: 'calling', agentId: SAMPLE_AGENT_A, name: 'Companies House Lookup', priceUsd: '0.02' };
+const screen: NetCall = { id: 'Wallet Risk Screener#0', kind: 'helper', tool: 'Wallet Risk Screener', state: 'calling', name: 'Wallet Risk Screener', priceUsd: '0.03' };
+
+/** A scripted run for preview mode: it searches, finds two agents, hires one, then uses its own helper. `at` is ms from the start. */
+export const SAMPLE_RUN: { at: number; calls: NetCall[] }[] = [
+  { at: 900, calls: [search] },
+  { at: 2300, calls: [{ ...search, state: 'done', found }] },
+  { at: 3000, calls: [{ ...search, state: 'done', found }, hire] },
+  { at: 5200, calls: [{ ...search, state: 'done', found }, { ...hire, state: 'done', paidUsd: '0.020000' }] },
+  { at: 5900, calls: [{ ...search, state: 'done', found }, { ...hire, state: 'done', paidUsd: '0.020000' }, screen] },
+  { at: 7600, calls: [{ ...search, state: 'done', found }, { ...hire, state: 'done', paidUsd: '0.020000' }, { ...screen, state: 'done', paidUsd: '0.030000' }] },
+];
+
 export const SAMPLE_CHAT: ChatTurn[] = [
   { role: 'user', text: 'Check Johnson Matthey PLC and the wallet 0xd8dA…6045 before I pay their invoice.' },
   {
     role: 'agent',
     text:
       'Johnson Matthey PLC is a registered UK company (number 00033774) and looks active. The wallet has no history with sanctioned services or mixers, so the payment looks low risk.\n\nI would go ahead, and keep the receipt for your records.',
-    used: { helpers: 2, costUsd: '0.08' },
-    details: ['Counterparty Check · $0.05 · answered in 4 s', 'Wallet Risk Screener · $0.03 · answered in 3 s'],
+    used: { helpers: 2, costUsd: '0.05' },
+    details: ['Companies House Lookup · $0.02 · found on the network', 'Wallet Risk Screener · $0.03'],
+    net: [
+      { kind: 'hire', tool: 'Hire an agent', ok: true, agentId: SAMPLE_AGENT_A, name: 'Companies House Lookup', priceUsd: '0.02', paidUsd: '0.020000' },
+      { kind: 'helper', tool: 'Wallet Risk Screener', ok: true, name: 'Wallet Risk Screener', priceUsd: '0.03', paidUsd: '0.030000' },
+    ],
   },
 ];
 

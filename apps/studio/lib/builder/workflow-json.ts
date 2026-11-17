@@ -6,7 +6,8 @@
 import type { DataSource } from '../env';
 import type { ConnectionList, N8nNode, N8nWorkflow } from '../n8n/policy';
 import type { HelperCard } from '../registry';
-import { helperNode, line, sourceNode, toolLine, uniqueName, webNode, WEB_TOOL_NAME, type ToolInfo } from './edit';
+import { findNode, helperNode, hireNode, line, sourceNode, toolLine, uniqueName, webNode, WEB_TOOL_NAME, type ToolInfo } from './edit';
+import { FIND_TOOL_NAME, HIRE_TOOL_NAME, networkRules } from './network';
 import { NODE, composeSystemMessage } from './template';
 
 /** What the agent is. Everything else is Studio's. */
@@ -15,6 +16,8 @@ export interface AgentSpec {
   helpers: { card: HelperCard; input: 'text' | 'json'; fields?: string }[];
   sources: DataSource[];
   web: boolean;
+  /** S6: the agent may find and hire other agents while it answers. On unless set to false. */
+  network?: boolean;
 }
 
 export interface RenderEnv {
@@ -25,6 +28,8 @@ export interface RenderEnv {
   model: string;
   zyndCredential: { id: string; name: string };
   openAiCredential: { id: string; name: string };
+  /** The agent's own entity id, when it has one: the rules tell it never to hire itself. */
+  ownEntityId?: string;
   /** Makes node and webhook ids. Tests pass a counter. */
   newId?: () => string;
 }
@@ -51,6 +56,9 @@ export interface RenderedAgent {
   /** The AI step's system message. */
   systemMessage: string;
 }
+
+/** Saving progress lets the app watch a run while it happens: n8n then keeps each step as it finishes. */
+export const AGENT_SETTINGS = { executionOrder: 'v1', availableInMCP: true, saveExecutionProgress: true } as const;
 
 const link = (node: string, type = 'main'): ConnectionList => [[{ node, type, index: 0 }]];
 
@@ -82,7 +90,16 @@ export function renderWorkflowJson(spec: AgentSpec, env: RenderEnv): RenderedAge
     tools.push({ name, kind: 'web', what: 'Reads public web pages and open APIs that need no key.', ref: 'web' });
   }
 
-  const systemMessage = composeSystemMessage(cleanInstructions(spec.instructions), tools.map(toolLine));
+  // S6: the two steps that let the agent look for other agents and hire one. Not in `tools`: they are not something the person picked.
+  const network = spec.network !== false;
+  if (network) {
+    const find = uniqueName(taken, FIND_TOOL_NAME);
+    toolNodes.push(findNode(find, toolEnv, place()));
+    const hire = uniqueName(taken, HIRE_TOOL_NAME);
+    toolNodes.push(hireNode(hire, toolEnv, place()));
+  }
+
+  const systemMessage = composeSystemMessage(cleanInstructions(spec.instructions), tools.map(toolLine), network ? networkRules(env.ownEntityId) : undefined);
   const parts: N8nNode[] = [
     {
       name: NODE.zynd,
@@ -112,7 +129,7 @@ export function renderWorkflowJson(spec: AgentSpec, env: RenderEnv): RenderedAge
       type: '@n8n/n8n-nodes-langchain.agent',
       typeVersion: 3.1,
       position: [600, 120],
-      parameters: { promptType: 'define', text: '={{ $json.request }}', options: { systemMessage, returnIntermediateSteps: true, maxIterations: 8 } },
+      parameters: { promptType: 'define', text: '={{ $json.request }}', options: { systemMessage, returnIntermediateSteps: true, maxIterations: 12 } },
     },
     {
       name: NODE.model,
@@ -142,7 +159,7 @@ export function renderWorkflowJson(spec: AgentSpec, env: RenderEnv): RenderedAge
   };
   for (const n of toolNodes) connections[n.name] = { ai_tool: link(NODE.ai, 'ai_tool') };
 
-  return { workflow: { name: env.name, nodes, connections, settings: { executionOrder: 'v1', availableInMCP: true } }, tools, systemMessage };
+  return { workflow: { name: env.name, nodes, connections, settings: { ...AGENT_SETTINGS } }, tools, systemMessage };
 }
 
 /**
