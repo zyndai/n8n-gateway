@@ -39,6 +39,12 @@ export function applyOps(wf: N8nWorkflow, operations: unknown): void {
         (lists[Number(op.sourceIndex ?? 0)] ??= []).push({ node: String(op.target), type, index: Number(op.targetIndex ?? 0) });
         break;
       }
+      case 'setNodeCredential': {
+        const node = wf.nodes.find((n) => n.name === op.nodeName);
+        if (!node) throw new Error(`No node named "${String(op.nodeName)}"`);
+        (node.credentials ??= {})[String(op.credentialKey)] = { id: String(op.credentialId), name: String(op.credentialName ?? '') };
+        break;
+      }
       default:
         break;
     }

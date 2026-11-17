@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { NODE } from '@/lib/builder/template';
 import { RelayRefusal, WorkflowRelay, type WorkflowBinding } from '@/lib/n8n/relay';
 import { FakeMcp, finishedRun } from './helpers/fakeMcp';
-import { ctx, goodWorkflow, nodeNamed } from './helpers/readback';
+import { ZYND_CRED, ctx, goodWorkflow, nodeNamed } from './helpers/readback';
 
 describe('WorkflowRelay', () => {
   let mcp: FakeMcp;
@@ -85,12 +85,34 @@ describe('WorkflowRelay', () => {
       expect(bind.saved).toEqual([]);
       expect(relay.workflowId).toBeNull();
     });
-    it('refuses a foreign credential the same way, and a trigger bound to another listing', async () => {
-      mcp.created = goodWorkflow((n) => void (nodeNamed(n, NODE.zynd).credentials = { zyndApi: { id: 'someone-elses', name: 'Zynd · grace' } }));
+    it('replaces the credential n8n picked by type with this person\'s own, then keeps the workflow', async () => {
+      // n8n attaches the first credential of the right type, whatever name the code asked for.
+      mcp.created = goodWorkflow((n) => {
+        for (const x of n) if (x.credentials?.zyndApi) x.credentials = { zyndApi: { id: 'showcase-cred', name: 'Zynd account' } };
+        delete nodeNamed(n, NODE.model).credentials;
+      });
+      const out = (await relay.callForModel('create_workflow_from_code', { code: 'x' })) as { saved: boolean; problems: string[] };
+      expect(out).toMatchObject({ saved: true, problems: [] });
+      const ops = mcp.callsTo('update_workflow')[0]?.args.operations as Record<string, unknown>[];
+      expect(ops.every((o) => o.type === 'setNodeCredential')).toBe(true);
+      expect(ops.find((o) => o.nodeName === NODE.zynd)).toEqual({ type: 'setNodeCredential', nodeName: NODE.zynd, credentialKey: 'zyndApi', credentialId: ZYND_CRED, credentialName: 'Zynd · ada-x7k2' });
+      expect(ops.find((o) => o.nodeName === NODE.model)).toMatchObject({ credentialKey: 'openAiApi', credentialId: ctx.openAiCredentialId });
+      expect(mcp.workflow?.nodes.filter((x) => x.credentials?.zyndApi).every((x) => x.credentials?.zyndApi?.id === ZYND_CRED)).toBe(true);
+      expect(bind.saved).toEqual(['wf-1']);
+    });
+    it('still refuses a credential of a type the step does not need, and a trigger bound to another listing', async () => {
+      mcp.created = goodWorkflow((n) => void (nodeNamed(n, NODE.request).credentials = { httpHeaderAuth: { id: 'secret', name: 'Some key' } }));
       await expect(relay.callForModel('create_workflow_from_code', { code: 'x' })).rejects.toThrow(RelayRefusal);
+      expect(mcp.callsTo('archive_workflow')).toHaveLength(1);
       mcp.created = goodWorkflow((n) => void (nodeNamed(n, NODE.zynd).parameters = { listingId: 'another', responseMode: 'lastNode' }));
       make();
       await expect(relay.callForModel('create_workflow_from_code', { code: 'x' })).rejects.toThrow(RelayRefusal);
+      expect(bind.saved).toEqual([]);
+    });
+    it('archives what it created when the read-back fails', async () => {
+      mcp.failTool.get_workflow_details = 'n8n is restarting';
+      await expect(relay.callForModel('create_workflow_from_code', { code: 'x' })).rejects.toThrow(/restarting/);
+      expect(mcp.callsTo('archive_workflow')[0]?.args).toEqual({ workflowId: 'wf-1' });
       expect(bind.saved).toEqual([]);
     });
     it('keeps a safe but unfinished workflow and says what is missing', async () => {

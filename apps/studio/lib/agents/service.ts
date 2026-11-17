@@ -44,6 +44,8 @@ export interface AgentServiceDeps {
   starterCreditUsd: string;
   starterCreditMaxAgents: number;
   openAiCredentialId: string;
+  /** The platform OpenAI credential's name in n8n. Optional: without it Studio sets the credential by id only. */
+  openAiCredentialName?: () => Promise<string>;
   agentModel: string;
   dataSources: DataSource[];
   maxCallPriceUsd: string;
@@ -159,12 +161,16 @@ export class AgentService {
   }
 
   async policyContextFor(listing: ListingView): Promise<PolicyContext> {
-    const zyndCredentialId = await this.deps.findCredentialId('zyndApi', credentialName(this.session.handle));
+    const zyndCredentialName = credentialName(this.session.handle);
+    const zyndCredentialId = await this.deps.findCredentialId('zyndApi', zyndCredentialName);
     if (!zyndCredentialId) throw new AgentError('unavailable', 'The person has no Zynd credential in n8n');
+    const openAiCredentialName = await this.deps.openAiCredentialName?.().catch(() => undefined);
     return {
       listingId: listing.id,
       zyndCredentialId,
+      zyndCredentialName,
       openAiCredentialId: this.deps.openAiCredentialId,
+      ...(openAiCredentialName ? { openAiCredentialName } : {}),
       agentModel: this.deps.agentModel,
       dataSources: this.deps.dataSources,
       maxCallPriceUsd: this.deps.maxCallPriceUsd,

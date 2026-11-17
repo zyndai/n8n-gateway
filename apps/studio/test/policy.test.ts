@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { NODE } from '@/lib/builder/template';
-import { ALLOWED_NODE_TYPES, checkWorkflow, isInternalHost, type N8nNode } from '@/lib/n8n/policy';
+import { ALLOWED_NODE_TYPES, checkWorkflow, credentialFixes, isInternalHost, type N8nNode } from '@/lib/n8n/policy';
 import { HELPER_ID, LISTING_ID, OPENAI_CRED, ZYND_CRED, ctx, goodWorkflow, nodeNamed } from './helpers/readback';
 
 const check = (change?: (n: N8nNode[]) => N8nNode[] | void) => checkWorkflow(goodWorkflow(change), ctx);
@@ -147,4 +147,31 @@ describe('checkWorkflow: missing parts (safe, but not a finished agent)', () => 
 
 describe('checkWorkflow: helper ids are checked as ids', () => {
   it('accepts the showcase helper id', () => expect(HELPER_ID).toMatch(/^zns:/));
+});
+
+describe('credentialFixes: Studio sets the credentials itself', () => {
+  it('asks for nothing when every step already has the right credential', () => {
+    expect(credentialFixes(goodWorkflow(), ctx)).toEqual([]);
+  });
+  it('sets the person\'s Zynd credential and the platform OpenAI credential where n8n chose another or none', () => {
+    const wf = goodWorkflow((n) => {
+      nodeNamed(n, NODE.zynd).credentials = { zyndApi: { id: 'showcase', name: 'Zynd account' } };
+      delete nodeNamed(n, 'Counterparty Check').credentials;
+      nodeNamed(n, NODE.model).credentials = { openAiApi: { id: 'other-openai', name: 'Someone' } };
+    });
+    const ops = credentialFixes(wf, ctx);
+    expect(ops).toEqual([
+      { type: 'setNodeCredential', nodeName: NODE.zynd, credentialKey: 'zyndApi', credentialId: ZYND_CRED, credentialName: 'Zynd · ada-x7k2' },
+      { type: 'setNodeCredential', nodeName: NODE.model, credentialKey: 'openAiApi', credentialId: OPENAI_CRED, credentialName: 'OpenAI account' },
+      { type: 'setNodeCredential', nodeName: 'Counterparty Check', credentialKey: 'zyndApi', credentialId: ZYND_CRED, credentialName: 'Zynd · ada-x7k2' },
+    ]);
+  });
+  it('never touches a credential type the step does not need, or a step that is not allowed: the check blocks those', () => {
+    const wf = goodWorkflow((n) => {
+      nodeNamed(n, NODE.request).credentials = { httpHeaderAuth: { id: 'k', name: 'key' } };
+      n.push({ name: 'Run code', type: 'n8n-nodes-base.code', typeVersion: 2, parameters: {}, credentials: { zyndApi: { id: 'x', name: 'x' } } });
+    });
+    expect(credentialFixes(wf, ctx)).toEqual([]);
+    expect(checkWorkflow(wf, ctx).blocked.length).toBe(2);
+  });
 });

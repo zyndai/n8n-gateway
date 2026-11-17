@@ -2,12 +2,13 @@
 // the instance owner and can change anything, so every call passes through here:
 //   - only tools on an allow-list, with only the arguments each needs;
 //   - a workflow id must be this agent's own, and a new workflow is created only while the agent has none;
-//   - after every create or update the workflow is read back and checked by `checkWorkflow`; the same check runs
-//     again right before a run or a publish, so nothing unchecked ever executes.
+//   - after every create or update the workflow is read back, its Zynd and OpenAI steps are given the right
+//     credentials (n8n picks one by type, not by the name asked for), and it is checked by `checkWorkflow`; the same
+//     check runs again right before a run or a publish, so nothing unchecked ever executes.
 // Publish, unpublish and archive are never offered to the model: Studio calls them itself from buttons.
 import { planEdit, currentInstructions, toolsOf, type AgentEdit, type ToolInfo } from '../builder/edit';
 import { NODE } from '../builder/template';
-import { checkWorkflow, type N8nNode, type N8nWorkflow, type PolicyContext, type PolicyResult } from './policy';
+import { checkWorkflow, credentialFixes, type N8nNode, type N8nWorkflow, type PolicyContext, type PolicyResult } from './policy';
 import { parseExecution, parseRequest, toolKey, type RunView } from './runs';
 
 export interface McpLike {
@@ -83,6 +84,18 @@ export class WorkflowRelay {
     return asWorkflow(await this.mcp.callTool('get_workflow_details', { workflowId: id }));
   }
 
+  /**
+   * Reads the workflow back and sets the right credential on every Zynd and OpenAI step that has another one or none.
+   * Returns the workflow as it is afterwards.
+   */
+  async pinCredentials(id: string = this.own()): Promise<N8nWorkflow> {
+    const wf = await this.details(id);
+    const operations = credentialFixes(wf, this.ctx);
+    if (operations.length === 0) return wf;
+    await this.mcp.callTool('update_workflow', { workflowId: id, operations, versionName: 'Studio credentials' });
+    return this.details(id);
+  }
+
   async check(): Promise<PolicyResult> {
     return checkWorkflow(await this.details(), this.ctx);
   }
@@ -130,7 +143,13 @@ export class WorkflowRelay {
     if (!id) throw new RelayRefusal('n8n did not confirm that the workflow was created. Try again.');
 
     // Read it back before keeping it: a workflow with anything not allowed is archived at once and never saved.
-    const result = checkWorkflow(await this.details(id), this.ctx);
+    let result: PolicyResult;
+    try {
+      result = checkWorkflow(await this.pinCredentials(id), this.ctx);
+    } catch (err) {
+      await this.mcp.callTool('archive_workflow', { workflowId: id }).catch(() => undefined);
+      throw err;
+    }
     if (result.blocked.length > 0) {
       await this.mcp.callTool('archive_workflow', { workflowId: id }).catch(() => undefined);
       throw new RelayRefusal('The workflow was not saved because it contains something that is not allowed. Fix the code and create it again.', result.blocked);
@@ -145,7 +164,7 @@ export class WorkflowRelay {
     const workflowId = this.own();
     if (!Array.isArray(args.operations) || args.operations.length === 0) throw new RelayRefusal('Send the changes in "operations".');
     await this.mcp.callTool('update_workflow', { ...args, workflowId });
-    const r = checkWorkflow(await this.details(), this.ctx);
+    const r = checkWorkflow(await this.pinCredentials(workflowId), this.ctx);
     // The edit is saved in the draft, but a workflow with anything not allowed is never run or published.
     if (r.blocked.length > 0) return { saved: true, usable: false, problems: r.blocked, next: 'Undo or fix these with update_workflow. The agent cannot run until they are gone.' };
     return { saved: true, usable: r.missing.length === 0, problems: r.missing };

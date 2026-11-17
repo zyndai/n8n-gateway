@@ -37,6 +37,9 @@ export interface PolicyContext {
   zyndCredentialId: string;
   /** The platform's OpenAI credential in n8n. */
   openAiCredentialId: string;
+  /** The two credentials' names, sent along when Studio sets a credential on a step. */
+  zyndCredentialName?: string;
+  openAiCredentialName?: string;
   /** The one model an agent may run on. */
   agentModel: string;
   /** The data sources the builder may offer; an AirnodeHub tool must match one of them. */
@@ -103,6 +106,31 @@ export function isInternalHost(host: string): boolean {
 
 const sameCredential = (c: { id?: string | null } | undefined, id: string) => Boolean(c?.id) && c?.id === id;
 
+/** The credential each allowed kind of step needs, by credential type. Kinds not listed need none. */
+function wantedCredentials(type: string, ctx: PolicyContext): Record<string, { id: string; name?: string }> {
+  if (type === T.zyndTrigger || type === T.zyndTool || type === T.airnodeTool) return { zyndApi: { id: ctx.zyndCredentialId, ...(ctx.zyndCredentialName ? { name: ctx.zyndCredentialName } : {}) } };
+  if (type === T.openAiModel) return { openAiApi: { id: ctx.openAiCredentialId, ...(ctx.openAiCredentialName ? { name: ctx.openAiCredentialName } : {}) } };
+  return {};
+}
+
+/**
+ * The `setNodeCredential` operations that give every Zynd and OpenAI step the one credential it must have. n8n
+ * attaches the first credential of the right type it finds when a workflow is created from code, whatever name the
+ * code asked for, so Studio sets them itself rather than trusting what n8n chose. Only the credential types a step's
+ * kind needs are touched: a step carrying any other credential is left as it is, and `checkWorkflow` blocks it.
+ */
+export function credentialFixes(wf: N8nWorkflow, ctx: PolicyContext): Record<string, unknown>[] {
+  const ops: Record<string, unknown>[] = [];
+  for (const n of Array.isArray(wf.nodes) ? wf.nodes : []) {
+    if (!ALLOWED_NODE_TYPES.includes(n.type)) continue;
+    for (const [key, want] of Object.entries(wantedCredentials(n.type, ctx))) {
+      if (sameCredential(n.credentials?.[key], want.id)) continue;
+      ops.push({ type: 'setNodeCredential', nodeName: n.name, credentialKey: key, credentialId: want.id, ...(want.name ? { credentialName: want.name } : {}) });
+    }
+  }
+  return ops;
+}
+
 function checkPayment(n: N8nNode, label: string, ctx: PolicyContext, out: string[]): void {
   if (param(n, 'payFrom') !== 'listing' || param(n, 'payFromListingId') !== ctx.listingId) {
     out.push(`${label} must pay from this agent's own wallet: set payFrom to "listing" and payFromListingId to "${ctx.listingId}".`);
@@ -129,12 +157,7 @@ export function checkWorkflow(wf: N8nWorkflow, ctx: PolicyContext): PolicyResult
     }
 
     // Credentials: a step may only carry the credential its own kind needs, and only the right one.
-    const wanted: Record<string, string> =
-      n.type === T.zyndTrigger || n.type === T.zyndTool || n.type === T.airnodeTool
-        ? { zyndApi: ctx.zyndCredentialId }
-        : n.type === T.openAiModel
-          ? { openAiApi: ctx.openAiCredentialId }
-          : {};
+    const wanted = Object.fromEntries(Object.entries(wantedCredentials(n.type, ctx)).map(([k, v]) => [k, v.id]));
     for (const [type, c] of Object.entries(n.credentials ?? {})) {
       if (!c) continue;
       const id = wanted[type];

@@ -44,6 +44,15 @@ function build(): Shared {
     return value;
   };
 
+  const openAiCredentialName = async (): Promise<string> => {
+    const name = await cached(`openai-name|${b.openAiCredentialId}`, async () => {
+      const out = (await mcp.callTool('list_credentials', { type: 'openAiApi', limit: 50 })) as { data?: { id: string; name: string }[] } | null;
+      return out?.data?.find((c) => c.id === b.openAiCredentialId)?.name;
+    });
+    if (!name) throw new Error('The platform OpenAI credential was not found in n8n');
+    return name;
+  };
+
   const registry = new Registry({ agentDnsUrl: b.agentDnsUrl, maxCallPriceUsd: b.maxCallPriceUsd });
   const deps: Shared['deps'] = {
     mcp,
@@ -56,6 +65,7 @@ function build(): Shared {
     starterCreditUsd: credit?.amountUsd ?? '0',
     starterCreditMaxAgents: credit?.maxAgents ?? 0,
     openAiCredentialId: b.openAiCredentialId,
+    openAiCredentialName,
     agentModel: b.agentModel,
     dataSources: b.dataSources,
     maxCallPriceUsd: b.maxCallPriceUsd,
@@ -70,14 +80,7 @@ function build(): Shared {
     builderModel: b.openAiModel,
     agentModel: b.agentModel,
     sessionSecret: env.sessionJwtSecret,
-    openAiCredentialName: async () => {
-      const name = await cached(`openai-name|${b.openAiCredentialId}`, async () => {
-        const out = (await mcp.callTool('list_credentials', { type: 'openAiApi', limit: 50 })) as { data?: { id: string; name: string }[] } | null;
-        return out?.data?.find((c) => c.id === b.openAiCredentialId)?.name;
-      });
-      if (!name) throw new Error('The platform OpenAI credential was not found in n8n');
-      return name;
-    },
+    openAiCredentialName,
   };
 }
 

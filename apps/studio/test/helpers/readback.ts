@@ -13,6 +13,8 @@ export const ctx: PolicyContext = {
   listingId: LISTING_ID,
   zyndCredentialId: ZYND_CRED,
   openAiCredentialId: OPENAI_CRED,
+  zyndCredentialName: 'Zynd · ada-x7k2',
+  openAiCredentialName: 'OpenAI account',
   agentModel: 'gpt-5-mini',
   dataSources: [{ name: 'Briefpixel news', listingUrl: 'https://airnode-briefpixel.fly.dev/', operation: 'listArticles', what: 'News', maxPriceUsd: '0.01' }],
   maxCallPriceUsd: '0.25',
