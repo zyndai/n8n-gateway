@@ -449,7 +449,7 @@ State: ✅ done and tested · ⏳ built, part still open (see [Still open](#stil
 | S5.1 ✅ | `build_agent`: Studio renders and writes the whole agent (REST), repairs helpers that do not answer, checks credit before testing; the raw n8n tools leave the model's list | The model never writes workflow code; unit tests cover each repair |
 | S5.2 ✅ | Builds run as background jobs: a reload or a closed tab does not stop them, and the screen reattaches | Reload mid-build: the progress picks up where it was and finishes |
 | S5.3 ✅ | The agent's parts appear and come alive while it is built and tested, with a plain activity feed | "Working on it…" is gone; every step the builder takes shows |
-| S5.4 | An eval of 30 fixed ideas against the real services | At least 27 of 30 reach "ready" on two runs in a row |
+| S5.4 ⏳ | An eval of 30 fixed ideas against the real services (`npm run eval:builder -w apps/studio`; ideas in `apps/studio/test/fixtures/build-ideas.json`). Written, **not run yet**: it spends real money (about $3-6 a run) and sets up its own Studio account on first run | At least 27 of 30 reach "ready" on two runs in a row |
 
 ---
 
