@@ -1,10 +1,10 @@
 'use client';
 
 import { ChevronDown, LogOut } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { copy } from '@/lib/copy';
-import { formatUsd } from '@/lib/format';
 import type { Viewer } from '@/lib/types';
 
 export function initials(name: string): string {
@@ -13,7 +13,7 @@ export function initials(name: string): string {
   return letters.map((p) => p?.[0] ?? '').join('').toUpperCase() || '?';
 }
 
-export function AccountMenu({ viewer, creditUsd }: { viewer: Viewer; creditUsd: string | null }) {
+export function AccountMenu({ viewer, credit }: { viewer: Viewer; credit: ReactNode }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -35,9 +35,7 @@ export function AccountMenu({ viewer, creditUsd }: { viewer: Viewer; creditUsd: 
         <DropdownMenuSeparator />
         <div className="flex items-center justify-between px-2 py-1.5 text-sm">
           <span className="text-muted-foreground">{copy.account.totalCredit}</span>
-          <span className="font-medium tabular-nums" title={creditUsd === null ? copy.account.unknownCredit : undefined}>
-            {formatUsd(creditUsd)}
-          </span>
+          {credit}
         </div>
         <DropdownMenuSeparator />
         <form action="/auth/sign-out" method="post">

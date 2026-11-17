@@ -1,10 +1,11 @@
 import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { AccountMenu } from '@/components/account-menu';
 import { Logo } from '@/components/logo';
 import { copy } from '@/lib/copy';
 import type { Viewer } from '@/lib/types';
 
-export function TopBar({ viewer, creditUsd, preview }: { viewer: Viewer; creditUsd: string | null; preview: boolean }) {
+export function TopBar({ viewer, credit, preview }: { viewer: Viewer; credit: ReactNode; preview: boolean }) {
   return (
     <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur">
       {preview ? <div className="bg-secondary py-1 text-center text-xs text-muted-foreground">{copy.preview.banner}</div> : null}
@@ -17,7 +18,7 @@ export function TopBar({ viewer, creditUsd, preview }: { viewer: Viewer; creditU
             </Link>
           </nav>
         </div>
-        <AccountMenu viewer={viewer} creditUsd={creditUsd} />
+        <AccountMenu viewer={viewer} credit={credit} />
       </div>
     </header>
   );
